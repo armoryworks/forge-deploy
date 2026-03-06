@@ -1,0 +1,85 @@
+services:
+  qb-engineer-ui:
+    build:
+      context: ./qb-engineer-ui
+    container_name: qb-engineer-ui
+    ports:
+      - "${UI_PORT:-4200}:80"
+    depends_on:
+      qb-engineer-api:
+        condition: service_started
+    restart: unless-stopped
+
+  qb-engineer-api:
+    build:
+      context: ./qb-engineer-server
+      dockerfile: qb-engineer.api/Dockerfile
+    container_name: qb-engineer-api
+    ports:
+      - "${API_PORT:-5000}:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Development}
+      - RECREATE_DB=${RECREATE_DB:-true}
+      - MOCK_INTEGRATIONS=${MOCK_INTEGRATIONS:-true}
+      - ConnectionStrings__DefaultConnection=Host=qb-engineer-db;Port=5432;Database=${POSTGRES_DB:-qb_engineer};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
+      - Jwt__Key=${JWT_KEY:-dev-secret-key-change-in-production-min-32-chars!!}
+      - Jwt__Issuer=${JWT_ISSUER:-qb-engineer}
+      - Jwt__Audience=${JWT_AUDIENCE:-qb-engineer-ui}
+    depends_on:
+      qb-engineer-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  qb-engineer-db:
+    image: pgvector/pgvector:pg17
+    container_name: qb-engineer-db
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-qb_engineer}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-qb_engineer}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  qb-engineer-storage:
+    image: minio/minio
+    container_name: qb-engineer-storage
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - miniodata:/data
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+
+  qb-engineer-backup:
+    image: alpine:3.19
+    container_name: qb-engineer-backup
+    command: ["sh", "-c", "echo 'Backup container placeholder' && sleep infinity"]
+    restart: unless-stopped
+
+  qb-engineer-ai:
+    image: ollama/ollama
+    container_name: qb-engineer-ai
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollamadata:/root/.ollama
+    profiles:
+      - ai
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  miniodata:
+  ollamadata:
