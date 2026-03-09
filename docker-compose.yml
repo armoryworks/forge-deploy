@@ -20,14 +20,19 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Development}
       - RECREATE_DB=${RECREATE_DB:-true}
-      - MOCK_INTEGRATIONS=${MOCK_INTEGRATIONS:-true}
       - ConnectionStrings__DefaultConnection=Host=qb-engineer-db;Port=5432;Database=${POSTGRES_DB:-qb_engineer};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
       - Jwt__Key=${JWT_KEY:-dev-secret-key-change-in-production-min-32-chars!!}
       - Jwt__Issuer=${JWT_ISSUER:-qb-engineer}
       - Jwt__Audience=${JWT_AUDIENCE:-qb-engineer-ui}
+      - Minio__Endpoint=qb-engineer-storage:9000
+      - Minio__AccessKey=${MINIO_ROOT_USER:-minioadmin}
+      - Minio__SecretKey=${MINIO_ROOT_PASSWORD:-minioadmin}
+      - Minio__UseSsl=false
     depends_on:
       qb-engineer-db:
         condition: service_healthy
+      qb-engineer-storage:
+        condition: service_started
     restart: unless-stopped
 
   qb-engineer-db:

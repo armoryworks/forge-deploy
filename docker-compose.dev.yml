@@ -1,0 +1,32 @@
+# Development overlay — hot-reload for UI and API
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Or set in .env for persistent dev mode:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml
+#
+# Angular changes reload instantly via ng serve (poll-based file watching).
+# .NET changes reload via dotnet watch (automatic rebuild on save).
+
+services:
+  qb-engineer-ui:
+    build:
+      context: ./qb-engineer-ui
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./qb-engineer-ui:/app
+      - ui_node_modules:/app/node_modules
+
+  qb-engineer-api:
+    build:
+      context: ./qb-engineer-server
+      dockerfile: qb-engineer.api/Dockerfile.dev
+    volumes:
+      - ./qb-engineer-server:/app
+    environment:
+      - DOTNET_USE_POLLING_FILE_WATCHER=true
+      - DOTNET_WATCH_RESTART_ON_RUDE_EDIT=true
+
+volumes:
+  ui_node_modules:
