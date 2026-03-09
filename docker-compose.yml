@@ -28,6 +28,7 @@ services:
       - Minio__AccessKey=${MINIO_ROOT_USER:-minioadmin}
       - Minio__SecretKey=${MINIO_ROOT_PASSWORD:-minioadmin}
       - Minio__UseSsl=false
+      - MockIntegrations=${MOCK_INTEGRATIONS:-false}
     depends_on:
       qb-engineer-db:
         condition: service_healthy
