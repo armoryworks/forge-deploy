@@ -8,6 +8,16 @@ services:
     depends_on:
       qb-engineer-api:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 256M
     restart: unless-stopped
 
   qb-engineer-api:
@@ -39,6 +49,16 @@ services:
         condition: service_healthy
       qb-engineer-storage:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     restart: unless-stopped
 
   qb-engineer-db:
@@ -57,6 +77,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     restart: unless-stopped
 
   qb-engineer-storage:
