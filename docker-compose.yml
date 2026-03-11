@@ -29,6 +29,8 @@ services:
       - Minio__SecretKey=${MINIO_ROOT_PASSWORD:-minioadmin}
       - Minio__UseSsl=false
       - MockIntegrations=${MOCK_INTEGRATIONS:-false}
+      - EasyPost__ApiKey=${EASYPOST_API_KEY:-}
+      - EasyPost__TestMode=${EASYPOST_TEST_MODE:-true}
       - Ollama__BaseUrl=${OLLAMA_BASE_URL:-http://qb-engineer-ai:11434}
       - Ollama__Model=${OLLAMA_MODEL:-llama3.2:3b}
       - FrontendBaseUrl=${FRONTEND_BASE_URL:-http://localhost:4200}
