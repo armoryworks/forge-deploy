@@ -1,0 +1,20 @@
+{
+  "name": "rfid-relay",
+  "version": "1.0.0",
+  "description": "Local WebSocket relay for USB RFID/NFC readers. Supports PC/SC smart card readers (nfc-pcsc) and raw HID readers (node-hid). Reads card UIDs and broadcasts to the browser.",
+  "type": "module",
+  "scripts": {
+    "start": "node relay.js",
+    "start:hid": "node relay.js --mode hid",
+    "start:pcsc": "dotnet run --project pcsc-relay",
+    "devices": "node list-devices.js",
+    "devices:pcsc": "dotnet run --project pcsc-relay -- --list"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "nfc-pcsc": "^0.8.1",
+    "node-hid": "^3.1.0"
+  }
+}
