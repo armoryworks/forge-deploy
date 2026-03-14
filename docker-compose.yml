@@ -44,6 +44,10 @@ services:
       - Ollama__BaseUrl=${OLLAMA_BASE_URL:-http://qb-engineer-ai:11434}
       - Ollama__Model=${OLLAMA_MODEL:-llama3.2:3b}
       - FrontendBaseUrl=${FRONTEND_BASE_URL:-http://localhost:4200}
+      - DocuSeal__BaseUrl=${DOCUSEAL_BASE_URL:-http://qb-engineer-signing:3000}
+      - DocuSeal__ApiKey=${DOCUSEAL_API_KEY:-}
+      - DocuSeal__TimeoutSeconds=${DOCUSEAL_TIMEOUT:-30}
+      - DocuSeal__WebhookSecret=${DOCUSEAL_WEBHOOK_SECRET:-}
     depends_on:
       qb-engineer-db:
         condition: service_healthy
@@ -114,7 +118,25 @@ services:
       - ai
     restart: unless-stopped
 
+  qb-engineer-signing:
+    image: docuseal/docuseal:latest
+    container_name: qb-engineer-signing
+    ports:
+      - "${DOCUSEAL_PORT:-3000}:3000"
+    volumes:
+      - docusealdata:/data
+    environment:
+      - SECRET_KEY_BASE=${DOCUSEAL_SECRET_KEY:-change-me-in-production}
+    profiles:
+      - signing
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: unless-stopped
+
 volumes:
   pgdata:
   miniodata:
   ollamadata:
+  docusealdata:
