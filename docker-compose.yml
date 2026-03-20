@@ -39,11 +39,12 @@ services:
       - Minio__SecretKey=${MINIO_ROOT_PASSWORD:-minioadmin}
       - Minio__UseSsl=false
       - MockIntegrations=${MOCK_INTEGRATIONS:-false}
-      - EasyPost__ApiKey=${EASYPOST_API_KEY:-}
-      - EasyPost__TestMode=${EASYPOST_TEST_MODE:-true}
+      - Usps__ConsumerKey=${USPS_CONSUMER_KEY:-}
+      - Usps__ConsumerSecret=${USPS_CONSUMER_SECRET:-}
       - Ollama__BaseUrl=${OLLAMA_BASE_URL:-http://qb-engineer-ai:11434}
       - Ollama__Model=${OLLAMA_MODEL:-llama3.2:3b}
       - FrontendBaseUrl=${FRONTEND_BASE_URL:-http://localhost:4200}
+      - FormRendererBaseUrl=${FORM_RENDERER_BASE_URL:-http://qb-engineer-ui:80}
       - DocuSeal__BaseUrl=${DOCUSEAL_BASE_URL:-http://qb-engineer-signing:3000}
       - DocuSeal__ApiKey=${DOCUSEAL_API_KEY:-}
       - DocuSeal__TimeoutSeconds=${DOCUSEAL_TIMEOUT:-30}
@@ -62,7 +63,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 2G
     restart: unless-stopped
 
   qb-engineer-db:
