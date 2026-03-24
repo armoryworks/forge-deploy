@@ -35,6 +35,7 @@ services:
       - Jwt__Issuer=${JWT_ISSUER:-qb-engineer}
       - Jwt__Audience=${JWT_AUDIENCE:-qb-engineer-ui}
       - Minio__Endpoint=qb-engineer-storage:9000
+      - Minio__PublicEndpoint=${MINIO_PUBLIC_ENDPOINT:-localhost:9000}
       - Minio__AccessKey=${MINIO_ROOT_USER:-minioadmin}
       - Minio__SecretKey=${MINIO_ROOT_PASSWORD:-minioadmin}
       - Minio__UseSsl=false
@@ -51,6 +52,9 @@ services:
       - DocuSeal__ApiKey=${DOCUSEAL_API_KEY:-}
       - DocuSeal__TimeoutSeconds=${DOCUSEAL_TIMEOUT:-30}
       - DocuSeal__WebhookSecret=${DOCUSEAL_WEBHOOK_SECRET:-}
+      - Tts__ApiKey=${TTS_API_KEY:-}
+      - Coqui__BaseUrl=${COQUI_BASE_URL:-}
+      - Coqui__SpeakerId=${COQUI_SPEAKER_ID:-}
     volumes:
       - ./docs:/app/docs:ro
     depends_on:
@@ -144,6 +148,24 @@ services:
         condition: service_healthy
     restart: "no"
 
+  qb-engineer-tts:
+    image: ghcr.io/coqui-ai/tts-cpu:latest
+    container_name: qb-engineer-tts
+    ports:
+      - "${TTS_PORT:-5002}:5002"
+    volumes:
+      - ttsdata:/root/.local/share/tts
+    # tts-server serves HTTP on --port; tts (the CLI default entrypoint) exits immediately
+    entrypoint: tts-server
+    command: --model_name tts_models/en/vctk/vits --port 5002 --use_cuda false
+    profiles:
+      - tts
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    restart: unless-stopped
+
   qb-engineer-signing:
     image: docuseal/docuseal:latest
     container_name: qb-engineer-signing
@@ -166,3 +188,4 @@ volumes:
   miniodata:
   ollamadata:
   docusealdata:
+  ttsdata:
