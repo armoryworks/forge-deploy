@@ -31,6 +31,7 @@ services:
     environment:
       - DOTNET_USE_POLLING_FILE_WATCHER=true
       - DOTNET_WATCH_RESTART_ON_RUDE_EDIT=true
+      - ASPNETCORE_URLS=http://+:8080;http://+:5000
 
 volumes:
   ui_node_modules:
