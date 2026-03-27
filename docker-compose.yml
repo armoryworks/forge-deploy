@@ -40,6 +40,10 @@ services:
       - Minio__SecretKey=${MINIO_ROOT_PASSWORD:-minioadmin}
       - Minio__UseSsl=false
       - MockIntegrations=${MOCK_INTEGRATIONS:-false}
+      - Storage__Provider=${STORAGE_PROVIDER:-minio}
+      - LocalStorage__RootPath=/app/storage
+      - LocalStorage__PublicBaseUrl=${LOCAL_STORAGE_PUBLIC_URL:-http://localhost:5000}
+      - LocalStorage__PresignedUrlExpirySeconds=${LOCAL_STORAGE_URL_EXPIRY:-3600}
       - Usps__ConsumerKey=${USPS_CONSUMER_KEY:-}
       - Usps__ConsumerSecret=${USPS_CONSUMER_SECRET:-}
       - Ollama__BaseUrl=${OLLAMA_BASE_URL:-http://qb-engineer-ai:11434}
@@ -56,8 +60,12 @@ services:
       - Tts__ApiKey=${TTS_API_KEY:-}
       - Coqui__BaseUrl=${COQUI_BASE_URL:-}
       - Coqui__SpeakerId=${COQUI_SPEAKER_ID:-}
+      - Stamps__ApiKey=${STAMPS_API_KEY:-}
+      - Stamps__AccountId=${STAMPS_ACCOUNT_ID:-}
+      - Stamps__Environment=${STAMPS_ENVIRONMENT:-sandbox}
     volumes:
       - ./docs:/app/docs:ro
+      - ${LOCAL_STORAGE_PATH:-./storage}:/app/storage
     depends_on:
       qb-engineer-db:
         condition: service_healthy
