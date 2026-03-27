@@ -29,7 +29,7 @@ services:
       - "${API_PORT:-5000}:8080"
     environment:
       - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Development}
-      - RECREATE_DB=${RECREATE_DB:-true}
+      - RECREATE_DB=${RECREATE_DB:-false}
       - ConnectionStrings__DefaultConnection=Host=qb-engineer-db;Port=5432;Database=${POSTGRES_DB:-qb_engineer};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
       - Jwt__Key=${JWT_KEY:-dev-secret-key-change-in-production-min-32-chars!!}
       - Jwt__Issuer=${JWT_ISSUER:-qb-engineer}
@@ -49,6 +49,7 @@ services:
       - FrontendBaseUrl=${FRONTEND_BASE_URL:-http://localhost:4200}
       - FormRendererBaseUrl=${FORM_RENDERER_BASE_URL:-http://qb-engineer-ui:80}
       - DocuSeal__BaseUrl=${DOCUSEAL_BASE_URL:-http://qb-engineer-signing:3000}
+      - DocuSeal__PublicBaseUrl=${DOCUSEAL_PUBLIC_BASE_URL:-${FRONTEND_BASE_URL:-http://localhost:4200}/docuseal}
       - DocuSeal__ApiKey=${DOCUSEAL_API_KEY:-}
       - DocuSeal__TimeoutSeconds=${DOCUSEAL_TIMEOUT:-30}
       - DocuSeal__WebhookSecret=${DOCUSEAL_WEBHOOK_SECRET:-}
