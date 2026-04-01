@@ -28,6 +28,7 @@ services:
       dockerfile: qb-engineer.api/Dockerfile.dev
     volumes:
       - ./qb-engineer-server:/app
+      - ./.git:/app/.git:ro
     environment:
       - DOTNET_USE_POLLING_FILE_WATCHER=true
       - DOTNET_WATCH_RESTART_ON_RUDE_EDIT=true

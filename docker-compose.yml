@@ -63,6 +63,8 @@ services:
       - Stamps__ApiKey=${STAMPS_API_KEY:-}
       - Stamps__AccountId=${STAMPS_ACCOUNT_ID:-}
       - Stamps__Environment=${STAMPS_ENVIRONMENT:-sandbox}
+      - APP_VERSION=${APP_VERSION:-dev}
+      - GIT_COMMIT=${GIT_COMMIT:-}
     volumes:
       - ./docs:/app/docs:ro
       - ${LOCAL_STORAGE_PATH:-./storage}:/app/storage
