@@ -8,7 +8,9 @@
     "start:hid": "node relay.js --mode hid",
     "start:pcsc": "dotnet run --project pcsc-relay",
     "devices": "node list-devices.js",
-    "devices:pcsc": "dotnet run --project pcsc-relay -- --list"
+    "devices:pcsc": "dotnet run --project pcsc-relay -- --list",
+    "install-service": "powershell -ExecutionPolicy Bypass -File install-service.ps1",
+    "uninstall-service": "powershell -ExecutionPolicy Bypass -File uninstall-service.ps1"
   },
   "dependencies": {
     "ws": "^8.18.0"

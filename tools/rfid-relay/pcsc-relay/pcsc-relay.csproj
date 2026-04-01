@@ -12,6 +12,8 @@
     <PackageReference Include="PCSC" Version="7.0.1" />
     <PackageReference Include="PCSC.Iso7816" Version="7.0.1" />
     <PackageReference Include="System.Net.WebSockets" Version="4.3.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="9.0.0" />
   </ItemGroup>
 
 </Project>
