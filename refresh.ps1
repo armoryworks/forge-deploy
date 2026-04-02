@@ -179,3 +179,6 @@ Write-Host "  Logs:    docker compose logs -f qb-engineer-api" -ForegroundColor 
 Write-Host "  Stop:    docker compose stop" -ForegroundColor DarkGray
 Write-Host "  DB CLI:  docker compose exec qb-engineer-db psql -U postgres -d qb_engineer" -ForegroundColor DarkGray
 Write-Host ""
+Write-Host "  IMPORTANT: Open http://localhost:4200 and press Ctrl+Shift+R (or Cmd+Shift+R on Mac)" -ForegroundColor Yellow
+Write-Host "             to hard-refresh the browser and pick up the latest UI changes." -ForegroundColor Yellow
+Write-Host ""
