@@ -1,16 +1,14 @@
 #!/usr/bin/env pwsh
-# refresh.ps1 — Build and start QB Engineer from scratch (or rebuild after a pull)
+# refresh.ps1 — Pull latest main, rebuild images, and start QB Engineer
 #
 # Usage:
-#   .\refresh.ps1                  # Rebuild UI + API, start all core services
-#   .\refresh.ps1 -Pull            # git pull first, then rebuild
+#   .\refresh.ps1                  # Pull main, rebuild UI + API, start all core services
 #   .\refresh.ps1 -IncludeAi       # Also start Ollama + pull AI models
 #   .\refresh.ps1 -IncludeSigning  # Also start DocuSeal signing service
 #   .\refresh.ps1 -RecreateDb      # Wipe and reseed the database
-#   .\refresh.ps1 -Pull -IncludeAi -IncludeSigning
+#   .\refresh.ps1 -IncludeAi -IncludeSigning
 
 param(
-    [switch]$Pull,
     [switch]$IncludeAi,
     [switch]$IncludeSigning,
     [switch]$RecreateDb
@@ -67,12 +65,17 @@ if (-not (Test-Path "docker-compose.yml")) {
 }
 Write-Ok "Working directory: $(Get-Location)"
 
-# ─── Git pull ───────────────────────────────────────────────────────────────
+# ─── Git pull main ──────────────────────────────────────────────────────────
 
-if ($Pull) {
-    Write-Step "Pulling latest code"
-    Invoke-Cmd "git pull" { git pull }
+Write-Step "Pulling latest code from main"
+
+$currentBranch = git rev-parse --abbrev-ref HEAD 2>$null
+if ($currentBranch -ne "main") {
+    Write-Warn "Currently on branch '$currentBranch' — switching to main"
+    Invoke-Cmd "git checkout main" { git checkout main }
 }
+
+Invoke-Cmd "git pull origin main" { git pull origin main }
 
 # ─── Stop running app containers (preserve db + storage volumes) ─────────────
 
