@@ -83,6 +83,12 @@ $env:BUILD_VERSION = git rev-list --count HEAD 2>$null
 $env:BUILD_SHA     = git rev-parse --short HEAD 2>$null
 Write-Ok "Build version: $env:BUILD_VERSION ($env:BUILD_SHA)"
 
+# Write version.json to disk so the dev volume mount picks it up
+$versionJson = '{"version":"' + $env:BUILD_VERSION + '","sha":"' + $env:BUILD_SHA + '"}'
+$versionPath = Join-Path (Get-Location) "qb-engineer-ui\public\assets\version.json"
+Set-Content -Path $versionPath -Value $versionJson -Encoding UTF8 -NoNewline
+Write-Ok "Wrote $versionPath"
+
 # --- Stop running app containers (preserve db + storage volumes) ---
 
 Write-Step "Stopping app containers"
