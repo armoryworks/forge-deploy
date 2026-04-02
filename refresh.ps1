@@ -77,6 +77,12 @@ if ($currentBranch -ne "main") {
 
 Invoke-Cmd "git pull origin main" { git pull origin main }
 
+# --- Capture build version from git ---
+
+$env:BUILD_VERSION = git rev-list --count HEAD 2>$null
+$env:BUILD_SHA     = git rev-parse --short HEAD 2>$null
+Write-Ok "Build version: $env:BUILD_VERSION ($env:BUILD_SHA)"
+
 # --- Stop running app containers (preserve db + storage volumes) ---
 
 Write-Step "Stopping app containers"

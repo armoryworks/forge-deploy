@@ -2,6 +2,9 @@ services:
   qb-engineer-ui:
     build:
       context: ./qb-engineer-ui
+      args:
+        BUILD_VERSION: ${BUILD_VERSION:-0}
+        BUILD_SHA: ${BUILD_SHA:-dev}
     container_name: qb-engineer-ui
     ports:
       - "${UI_PORT:-4200}:80"
