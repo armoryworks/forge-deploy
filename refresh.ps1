@@ -91,7 +91,7 @@ Invoke-Cmd "Build API" {
     docker compose build qb-engineer-api
 }
 Invoke-Cmd "Build UI" {
-    docker compose build qb-engineer-ui
+    docker compose build --no-cache qb-engineer-ui
 }
 
 # --- Compose up - core services ---
