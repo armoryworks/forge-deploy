@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# refresh.ps1 — Pull latest main, rebuild images, and start QB Engineer
+# refresh.ps1 - Pull latest main, rebuild images, and start QB Engineer
 #
 # Usage:
 #   .\refresh.ps1                  # Pull main, rebuild UI + API, start all core services
@@ -17,7 +17,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ─── Helpers ────────────────────────────────────────────────────────────────
+# --- Helpers ---
 
 function Write-Step([string]$msg) {
     Write-Host "`n==> $msg" -ForegroundColor Cyan
@@ -43,7 +43,7 @@ function Invoke-Cmd([string]$desc, [scriptblock]$cmd) {
     }
 }
 
-# ─── Pre-flight ─────────────────────────────────────────────────────────────
+# --- Pre-flight ---
 
 Write-Step "Pre-flight checks"
 
@@ -65,26 +65,26 @@ if (-not (Test-Path "docker-compose.yml")) {
 }
 Write-Ok "Working directory: $(Get-Location)"
 
-# ─── Git pull main ──────────────────────────────────────────────────────────
+# --- Git pull main ---
 
 Write-Step "Pulling latest code from main"
 
 $currentBranch = git rev-parse --abbrev-ref HEAD 2>$null
 if ($currentBranch -ne "main") {
-    Write-Warn "Currently on branch '$currentBranch' — switching to main"
+    Write-Warn "Currently on branch '$currentBranch' - switching to main"
     Invoke-Cmd "git checkout main" { git checkout main }
 }
 
 Invoke-Cmd "git pull origin main" { git pull origin main }
 
-# ─── Stop running app containers (preserve db + storage volumes) ─────────────
+# --- Stop running app containers (preserve db + storage volumes) ---
 
 Write-Step "Stopping app containers"
 Invoke-Cmd "Stop UI + API" {
     docker compose stop qb-engineer-ui qb-engineer-api
 }
 
-# ─── Build images ───────────────────────────────────────────────────────────
+# --- Build images ---
 
 Write-Step "Building images"
 Invoke-Cmd "Build API" {
@@ -94,13 +94,13 @@ Invoke-Cmd "Build UI" {
     docker compose build qb-engineer-ui
 }
 
-# ─── Compose up — core services ─────────────────────────────────────────────
+# --- Compose up - core services ---
 
 Write-Step "Starting core services"
 
 $env:RECREATE_DB = if ($RecreateDb) { "true" } else { "false" }
 if ($RecreateDb) {
-    Write-Warn "RECREATE_DB=true — database will be wiped and reseeded"
+    Write-Warn "RECREATE_DB=true - database will be wiped and reseeded"
 }
 
 $coreServices = @(
@@ -115,11 +115,11 @@ Invoke-Cmd "docker compose up -d (core)" {
     docker compose up -d --remove-orphans @coreServices
 }
 
-# ─── Optional: AI ────────────────────────────────────────────────────────────
+# --- Optional: AI ---
 
 if ($IncludeAi) {
     Write-Step "Starting AI service (Ollama)"
-    Write-Warn "First run pulls llama3.2:3b + all-minilm:l6-v2 — this can take several minutes"
+    Write-Warn "First run pulls llama3.2:3b + all-minilm:l6-v2 - this can take several minutes"
     Invoke-Cmd "docker compose up -d (AI)" {
         docker compose up -d qb-engineer-ai qb-engineer-ai-init
     }
@@ -127,7 +127,7 @@ if ($IncludeAi) {
     Write-Warn "Skipping AI service. Add -IncludeAi to include Ollama."
 }
 
-# ─── Optional: Signing ───────────────────────────────────────────────────────
+# --- Optional: Signing ---
 
 if ($IncludeSigning) {
     Write-Step "Starting DocuSeal signing service"
@@ -138,7 +138,7 @@ if ($IncludeSigning) {
     Write-Warn "Skipping signing service. Add -IncludeSigning to include DocuSeal."
 }
 
-# ─── Wait for API health ─────────────────────────────────────────────────────
+# --- Wait for API health ---
 
 Write-Step "Waiting for API to become healthy"
 $maxWait = 60
@@ -151,7 +151,8 @@ while ($elapsed -lt $maxWait) {
         $healthy = $true
         break
     }
-    Write-Host "    API status: $status (${elapsed}s / ${maxWait}s)" -ForegroundColor DarkGray
+    $msg = "    API status: $status (" + $elapsed + "s / " + $maxWait + "s)"
+    Write-Host $msg -ForegroundColor DarkGray
     Start-Sleep 5
     $elapsed += 5
 }
@@ -159,10 +160,10 @@ while ($elapsed -lt $maxWait) {
 if ($healthy) {
     Write-Ok "API is healthy"
 } else {
-    Write-Warn "API health check timed out after ${maxWait}s — check logs: docker compose logs -f qb-engineer-api"
+    Write-Warn "API health check timed out after $maxWait s - check logs: docker compose logs -f qb-engineer-api"
 }
 
-# ─── Status ──────────────────────────────────────────────────────────────────
+# --- Status ---
 
 Write-Step "Container status"
 docker compose ps
