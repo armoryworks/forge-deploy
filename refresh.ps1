@@ -89,18 +89,31 @@ $versionPath = Join-Path (Get-Location) "qb-engineer-ui\public\assets\version.js
 Set-Content -Path $versionPath -Value $versionJson -Encoding UTF8 -NoNewline
 Write-Ok "Wrote $versionPath"
 
-# --- Stop running app containers (preserve db + storage volumes) ---
+# --- Remove running app containers (preserve db + storage volumes) ---
 
-Write-Step "Stopping app containers"
-Invoke-Cmd "Stop UI + API" {
-    docker compose stop qb-engineer-ui qb-engineer-api
+Write-Step "Removing app containers"
+Invoke-Cmd "Remove UI + API containers" {
+    docker compose rm -sf qb-engineer-ui qb-engineer-api
+}
+
+# --- Refresh node_modules volume if package.json changed ---
+
+Write-Step "Checking for dependency changes"
+$pkgChanged = git diff HEAD@{1} --name-only 2>$null | Select-String "qb-engineer-ui/package"
+if ($pkgChanged) {
+    Write-Warn "package.json changed — recreating node_modules volume"
+    Invoke-Cmd "Remove ui_node_modules volume" {
+        docker volume rm -f qb-engineer-wrapper_ui_node_modules 2>$null
+    }
+} else {
+    Write-Ok "No package.json changes detected"
 }
 
 # --- Build images ---
 
-Write-Step "Building images"
+Write-Step "Building images (no cache)"
 Invoke-Cmd "Build API" {
-    docker compose build qb-engineer-api
+    docker compose build --no-cache qb-engineer-api
 }
 Invoke-Cmd "Build UI" {
     docker compose build --no-cache qb-engineer-ui
@@ -124,7 +137,7 @@ $coreServices = @(
 )
 
 Invoke-Cmd "docker compose up -d (core)" {
-    docker compose up -d --remove-orphans @coreServices
+    docker compose up -d --force-recreate --remove-orphans @coreServices
 }
 
 # --- Optional: AI ---
