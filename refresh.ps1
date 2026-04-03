@@ -101,7 +101,7 @@ Invoke-Cmd "Remove UI + API containers" {
 Write-Step "Checking for dependency changes"
 $pkgChanged = git diff 'HEAD@{1}' --name-only 2>$null | Select-String "qb-engineer-ui/package"
 if ($pkgChanged) {
-    Write-Warn "package.json changed — recreating node_modules volume"
+    Write-Warn "package.json changed - recreating node_modules volume"
     Invoke-Cmd "Remove ui_node_modules volume" {
         docker volume rm -f qb-engineer-wrapper_ui_node_modules 2>$null
     }
@@ -125,7 +125,7 @@ Write-Step "Starting core services"
 
 $env:RECREATE_DB = if ($RecreateDb) { "true" } else { "false" }
 if ($RecreateDb) {
-    Write-Warn "RECREATE_DB=true - database will be wiped and reseeded"
+    Write-Warn "RECREATE_DB=true -- database will be wiped and reseeded"
 }
 
 $coreServices = @(
