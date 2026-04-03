@@ -99,7 +99,7 @@ Invoke-Cmd "Remove UI + API containers" {
 # --- Refresh node_modules volume if package.json changed ---
 
 Write-Step "Checking for dependency changes"
-$pkgChanged = git diff HEAD@{1} --name-only 2>$null | Select-String "qb-engineer-ui/package"
+$pkgChanged = git diff 'HEAD@{1}' --name-only 2>$null | Select-String "qb-engineer-ui/package"
 if ($pkgChanged) {
     Write-Warn "package.json changed — recreating node_modules volume"
     Invoke-Cmd "Remove ui_node_modules volume" {
@@ -171,7 +171,7 @@ $elapsed = 0
 $healthy = $false
 
 while ($elapsed -lt $maxWait) {
-    $status = docker inspect --format="{{.State.Health.Status}}" qb-engineer-api 2>$null
+    $status = docker inspect --format='{{.State.Health.Status}}' qb-engineer-api 2>$null
     if ($status -eq "healthy") {
         $healthy = $true
         break
