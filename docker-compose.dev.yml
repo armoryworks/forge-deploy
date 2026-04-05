@@ -29,6 +29,7 @@ services:
     volumes:
       - ./qb-engineer-server:/app
       - ./.git:/app/.git:ro
+      - ./tools:/app/tools:ro
     environment:
       - DOTNET_USE_POLLING_FILE_WATCHER=true
       - DOTNET_WATCH_RESTART_ON_RUDE_EDIT=true

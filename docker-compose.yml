@@ -71,7 +71,7 @@ services:
     volumes:
       - ./docs:/app/docs:ro
       - ${LOCAL_STORAGE_PATH:-./storage}:/app/storage
-      - ./tools/dist:/app/tools:ro
+      - ./tools:/app/tools:ro
     depends_on:
       qb-engineer-db:
         condition: service_healthy
