@@ -83,8 +83,8 @@ async function startPcsc() {
   try {
     ({ NFC } = await import('nfc-pcsc'));
   } catch {
-    console.error('PC/SC mode unavailable: nfc-pcsc not installed. Run "npm install".');
-    if (mode === 'pcsc') process.exit(1);
+    console.warn('PC/SC mode unavailable: nfc-pcsc not installed (native build tools may be missing).');
+    console.warn('WebSocket server will still run for keyboard-wedge/HID scanners.');
     return;
   }
 
@@ -132,8 +132,8 @@ async function startHid() {
   try {
     ({ default: HID } = await import('node-hid'));
   } catch {
-    console.error('HID mode unavailable: node-hid not installed. Run "npm install".');
-    if (mode === 'hid') process.exit(1);
+    console.warn('HID mode unavailable: node-hid not installed (native build tools may be missing).');
+    console.warn('WebSocket server will still run for keyboard-wedge scanners.');
     return;
   }
 

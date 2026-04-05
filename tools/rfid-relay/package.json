@@ -13,7 +13,8 @@
     "uninstall-service": "powershell -ExecutionPolicy Bypass -File uninstall-service.ps1"
   },
   "dependencies": {
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "node-windows": "^1.0.0-beta.8"
   },
   "optionalDependencies": {
     "nfc-pcsc": "^0.8.1",

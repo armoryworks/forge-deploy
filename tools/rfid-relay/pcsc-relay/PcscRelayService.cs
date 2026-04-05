@@ -170,7 +170,7 @@ internal sealed class PcscRelayService : BackgroundService
             {
                 foreach (var name in e.DetachedReaders)
                 {
-                    _activeReaders.TryRemove(name, out _);
+                    _activeReaders.TryRemove(name, out bool _);
                     Broadcast(new { type = "disconnected", device = name });
                     Console.WriteLine($"[PC/SC] Reader disconnected: {name}");
                 }
