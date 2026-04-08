@@ -50,7 +50,7 @@ services:
       - Usps__ConsumerKey=${USPS_CONSUMER_KEY:-}
       - Usps__ConsumerSecret=${USPS_CONSUMER_SECRET:-}
       - Ollama__BaseUrl=${OLLAMA_BASE_URL:-http://qb-engineer-ai:11434}
-      - Ollama__Model=${OLLAMA_MODEL:-llama3.2:3b}
+      - Ollama__Model=${OLLAMA_MODEL:-gemma3:4b}
       - Ollama__EmbeddingModel=${OLLAMA_EMBEDDING_MODEL:-all-minilm:l6-v2}
       - Ollama__DocsPath=/app/docs
       - FrontendBaseUrl=${FRONTEND_BASE_URL:-http://localhost:4200}
@@ -155,7 +155,7 @@ services:
     container_name: qb-engineer-ai-init
     entrypoint: ["/bin/sh", "-c"]
     command: >
-      "ollama pull llama3.2:3b && ollama pull all-minilm:l6-v2 && echo 'AI model init complete'"
+      "ollama pull gemma3:4b && ollama pull all-minilm:l6-v2 && echo 'AI model init complete'"
     environment:
       - OLLAMA_HOST=http://qb-engineer-ai:11434
     depends_on:
