@@ -49,10 +49,10 @@ services:
       - LocalStorage__PresignedUrlExpirySeconds=${LOCAL_STORAGE_URL_EXPIRY:-3600}
       - Usps__ConsumerKey=${USPS_CONSUMER_KEY:-}
       - Usps__ConsumerSecret=${USPS_CONSUMER_SECRET:-}
-      - Ollama__BaseUrl=${OLLAMA_BASE_URL:-http://qb-engineer-ai:11434}
-      - Ollama__Model=${OLLAMA_MODEL:-gemma3:4b}
-      - Ollama__EmbeddingModel=${OLLAMA_EMBEDDING_MODEL:-all-minilm:l6-v2}
-      - Ollama__DocsPath=/app/docs
+      - Ai__BaseUrl=${AI_BASE_URL:-http://qb-engineer-ai:11434}
+      - Ai__Model=${AI_MODEL:-gemma3:4b}
+      - Ai__EmbeddingModel=${AI_EMBEDDING_MODEL:-all-minilm:l6-v2}
+      - Ai__DocsPath=/app/docs
       - FrontendBaseUrl=${FRONTEND_BASE_URL:-http://localhost:4200}
       - FormRendererBaseUrl=${FORM_RENDERER_BASE_URL:-http://qb-engineer-ui:80}
       - DocuSeal__BaseUrl=${DOCUSEAL_BASE_URL:-http://qb-engineer-signing:3000}
@@ -135,7 +135,7 @@ services:
     image: ollama/ollama
     container_name: qb-engineer-ai
     ports:
-      - "${OLLAMA_PORT:-11434}:11434"
+      - "${AI_PORT:-11434}:11434"
     volumes:
       - ollamadata:/root/.ollama
     healthcheck:
