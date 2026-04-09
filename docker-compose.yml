@@ -144,6 +144,8 @@ services:
       timeout: 10s
       start_period: 30s
       retries: 5
+    profiles:
+      - ai
     deploy:
       resources:
         limits:
@@ -161,6 +163,8 @@ services:
     depends_on:
       qb-engineer-ai:
         condition: service_healthy
+    profiles:
+      - ai
     restart: "no"
 
   qb-engineer-tts:

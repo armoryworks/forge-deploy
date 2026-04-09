@@ -144,9 +144,9 @@ Invoke-Cmd "docker compose up -d (core)" {
 
 if ($IncludeAi) {
     Write-Step "Starting AI service (Ollama)"
-    Write-Warn "First run pulls llama3.2:3b + all-minilm:l6-v2 - this can take several minutes"
+    Write-Warn "First run pulls gemma3:4b + all-minilm:l6-v2 - this can take several minutes"
     Invoke-Cmd "docker compose up -d (AI)" {
-        docker compose up -d qb-engineer-ai qb-engineer-ai-init
+        docker compose --profile ai up -d qb-engineer-ai qb-engineer-ai-init
     }
 } else {
     Write-Warn "Skipping AI service. Add -IncludeAi to include Ollama."
