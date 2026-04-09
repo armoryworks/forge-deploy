@@ -377,8 +377,12 @@ if ($Seeded) {
     } while ($true)
 
     $envContent = Get-Content ".env" -Raw
-    $envContent = $envContent -replace 'SEED_USER_PASSWORD=.*', "SEED_USER_PASSWORD=$seedPassword"
-    Set-Content ".env" -Value $envContent -NoNewline
+    if ($envContent -match 'SEED_USER_PASSWORD=') {
+        $envContent = $envContent -replace 'SEED_USER_PASSWORD=.*', "SEED_USER_PASSWORD=$seedPassword"
+        Set-Content ".env" -Value $envContent -NoNewline
+    } else {
+        Add-Content ".env" -Value "SEED_USER_PASSWORD=$seedPassword"
+    }
     Write-Ok "Seed user password set"
 }
 
