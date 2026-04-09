@@ -7,6 +7,8 @@
 # Usage:
 #   .\setup.ps1                  # Core stack only — clean database, no demo data
 #   .\setup.ps1 -Seeded          # Seed with demo data (users, jobs, customers, etc.)
+#   .\setup.ps1 -Fresh           # Wipe existing database and start over
+#   .\setup.ps1 -Fresh -Seeded   # Wipe database and reseed with demo data
 #   .\setup.ps1 -IncludeAi       # Also start Ollama AI assistant
 #   .\setup.ps1 -IncludeTts      # Also start Coqui TTS for training video narration
 #   .\setup.ps1 -IncludeSigning  # Also start DocuSeal e-signature service
@@ -14,6 +16,7 @@
 
 param(
     [switch]$Seeded,
+    [switch]$Fresh,
     [switch]$IncludeAi,
     [switch]$IncludeTts,
     [switch]$IncludeSigning,
@@ -348,6 +351,17 @@ if (Test-Path ".env") {
     }
 }
 
+# Apply -Fresh and -Seeded flags (works on both new and existing .env)
+if ($Fresh) {
+    $envContent = Get-Content ".env" -Raw
+    $envContent = $envContent -replace 'RECREATE_DB=\w+', 'RECREATE_DB=true'
+    if ($Seeded) {
+        $envContent = $envContent -replace 'SEED_DEMO_DATA=\w+', 'SEED_DEMO_DATA=true'
+    }
+    Set-Content ".env" -Value $envContent -NoNewline
+    Write-Warn "-Fresh: database will be wiped and recreated on next start"
+}
+
 # ─────────────────────────────────────────────────────────────
 # 4. Write version.json
 # ─────────────────────────────────────────────────────────────
@@ -458,6 +472,14 @@ if ($healthy) {
     Write-Warn "API health check timed out after $maxWait s"
     Write-Warn "This is normal on very first start while migrations run."
     Write-Warn "Check progress with: docker compose logs -f qb-engineer-api"
+}
+
+# Reset RECREATE_DB so the next restart doesn't wipe the database again
+if ($Fresh) {
+    $envContent = Get-Content ".env" -Raw
+    $envContent = $envContent -replace 'RECREATE_DB=true', 'RECREATE_DB=false'
+    Set-Content ".env" -Value $envContent -NoNewline
+    Write-Ok "Reset RECREATE_DB=false (database has been wiped, won't repeat on next start)"
 }
 
 # ─────────────────────────────────────────────────────────────
