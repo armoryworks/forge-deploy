@@ -351,6 +351,37 @@ if (Test-Path ".env") {
     }
 }
 
+# Prompt for seed user password when seeding demo data
+if ($Seeded) {
+    Write-Step "Demo data user password"
+    Write-Host ""
+    Write-Host "    Demo data includes 9 test users (admin@qbengineer.local, etc.)"
+    Write-Host "    You must set a temporary password for these accounts."
+    Write-Host "    Requirements: 8+ chars, uppercase, lowercase, digit, special char"
+    Write-Host ""
+    do {
+        $seedPassword = Read-Host "    Enter password for demo users"
+        if ($seedPassword.Length -lt 8) {
+            Write-Warn "Password must be at least 8 characters"
+        } elseif ($seedPassword -cnotmatch '[A-Z]') {
+            Write-Warn "Password must contain an uppercase letter"
+        } elseif ($seedPassword -cnotmatch '[a-z]') {
+            Write-Warn "Password must contain a lowercase letter"
+        } elseif ($seedPassword -notmatch '[0-9]') {
+            Write-Warn "Password must contain a digit"
+        } elseif ($seedPassword -notmatch '[^A-Za-z0-9]') {
+            Write-Warn "Password must contain a special character"
+        } else {
+            break
+        }
+    } while ($true)
+
+    $envContent = Get-Content ".env" -Raw
+    $envContent = $envContent -replace 'SEED_USER_PASSWORD=.*', "SEED_USER_PASSWORD=$seedPassword"
+    Set-Content ".env" -Value $envContent -NoNewline
+    Write-Ok "Seed user password set"
+}
+
 # Apply -Fresh and -Seeded flags (works on both new and existing .env)
 if ($Fresh) {
     $envContent = Get-Content ".env" -Raw
