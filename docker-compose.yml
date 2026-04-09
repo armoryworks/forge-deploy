@@ -33,6 +33,7 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Development}
       - RECREATE_DB=${RECREATE_DB:-false}
+      - SEED_DEMO_DATA=${SEED_DEMO_DATA:-false}
       - ConnectionStrings__DefaultConnection=Host=qb-engineer-db;Port=5432;Database=${POSTGRES_DB:-qb_engineer};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
       - Jwt__Key=${JWT_KEY:-dev-secret-key-change-in-production-min-32-chars!!}
       - Jwt__Issuer=${JWT_ISSUER:-qb-engineer}

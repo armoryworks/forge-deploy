@@ -5,13 +5,15 @@
 # Run from the repo root after cloning.
 #
 # Usage:
-#   .\setup.ps1                  # Core stack only (ui, api, db, storage, backup)
+#   .\setup.ps1                  # Core stack only — clean database, no demo data
+#   .\setup.ps1 -Seeded          # Seed with demo data (users, jobs, customers, etc.)
 #   .\setup.ps1 -IncludeAi       # Also start Ollama AI assistant
 #   .\setup.ps1 -IncludeTts      # Also start Coqui TTS for training video narration
 #   .\setup.ps1 -IncludeSigning  # Also start DocuSeal e-signature service
 #   .\setup.ps1 -IncludeAll      # All optional profiles
 
 param(
+    [switch]$Seeded,
     [switch]$IncludeAi,
     [switch]$IncludeTts,
     [switch]$IncludeSigning,
@@ -332,8 +334,18 @@ if (Test-Path ".env") {
     # Replace the dev placeholder JWT key with the generated one
     $envContent = Get-Content ".env" -Raw
     $envContent = $envContent -replace 'JWT_KEY=dev-secret-key-change-in-production-min-32-chars!!', "JWT_KEY=$jwtKey"
+
+    # Default to clean install (no demo data) unless -Seeded flag is passed
+    $seedValue = if ($Seeded) { "true" } else { "false" }
+    $envContent = $envContent -replace 'SEED_DEMO_DATA=true', "SEED_DEMO_DATA=$seedValue"
+
     Set-Content ".env" -Value $envContent -NoNewline
     Write-Ok "Generated random JWT signing key"
+    if ($Seeded) {
+        Write-Ok "Demo data will be seeded (users, jobs, customers, etc.)"
+    } else {
+        Write-Ok "Clean install — no demo data (setup wizard creates your admin account)"
+    }
 }
 
 # ─────────────────────────────────────────────────────────────
