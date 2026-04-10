@@ -192,11 +192,9 @@ services:
   qb-engineer-logs:
     image: datalust/seq:latest
     container_name: qb-engineer-logs
-    ports:
-      - "${SEQ_PORT:-5341}:5341"
-      - "${SEQ_UI_PORT:-8081}:80"
     environment:
       - ACCEPT_EULA=Y
+      - SEQ_PATHBASE=/logs
       - SEQ_FIRSTRUN_ADMINPASSWORDHASH=${SEQ_ADMIN_PASSWORD_HASH:-}
       - SEQ_FIRSTRUN_ADMINUSERNAME=${SEQ_ADMIN_USERNAME:-admin}
     volumes:
