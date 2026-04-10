@@ -68,6 +68,8 @@ services:
       - Stamps__ApiKey=${STAMPS_API_KEY:-}
       - Stamps__AccountId=${STAMPS_ACCOUNT_ID:-}
       - Stamps__Environment=${STAMPS_ENVIRONMENT:-sandbox}
+      - Seq__ServerUrl=${SEQ_SERVER_URL:-}
+      - Seq__ApiKey=${SEQ_API_KEY:-}
       - APP_VERSION=${APP_VERSION:-dev}
       - GIT_COMMIT=${GIT_COMMIT:-}
     volumes:
@@ -187,6 +189,26 @@ services:
           memory: 2G
     restart: unless-stopped
 
+  qb-engineer-logs:
+    image: datalust/seq:latest
+    container_name: qb-engineer-logs
+    ports:
+      - "${SEQ_PORT:-5341}:5341"
+      - "${SEQ_UI_PORT:-8081}:80"
+    environment:
+      - ACCEPT_EULA=Y
+      - SEQ_FIRSTRUN_ADMINPASSWORDHASH=${SEQ_ADMIN_PASSWORD_HASH:-}
+      - SEQ_FIRSTRUN_ADMINUSERNAME=${SEQ_ADMIN_USERNAME:-admin}
+    volumes:
+      - seqdata:/data
+    profiles:
+      - logging
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: unless-stopped
+
   qb-engineer-signing:
     image: docuseal/docuseal:latest
     container_name: qb-engineer-signing
@@ -210,3 +232,4 @@ volumes:
   ollamadata:
   docusealdata:
   ttsdata:
+  seqdata:
