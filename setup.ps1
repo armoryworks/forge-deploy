@@ -445,6 +445,11 @@ $coreServices = @(
     "qb-engineer-ui"
 )
 
+# --- Git Hooks ---
+Write-Step "Configuring git hooks"
+git config core.hooksPath .githooks
+Write-Host "  Pre-commit hook enabled (runs tests before commit)" -ForegroundColor DarkGray
+
 Invoke-Cmd "docker compose up -d (core)" {
     docker compose up -d --remove-orphans @coreServices
 }

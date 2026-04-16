@@ -547,6 +547,10 @@ echo "    Building UI image..."
 docker compose build qb-engineer-ui
 ok "UI image built"
 
+step "Configuring git hooks"
+git config core.hooksPath .githooks
+ok "Pre-commit hook enabled (runs tests before commit)"
+
 step "Starting core services (db, storage, backup, api, ui)"
 
 docker compose up -d --remove-orphans \
