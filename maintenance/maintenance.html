@@ -298,10 +298,10 @@
 
   <div class="status-bar">
     <div class="pulse-dot"></div>
-    <span>Maintenance in progress &mdash; refreshing in <span id="countdown">30</span>s</span>
+    <span>Maintenance in progress &mdash; checking in <span id="countdown">10</span>s</span>
   </div>
 
-  <p class="refresh-note">This page auto-refreshes. Go get coffee.</p>
+  <p class="refresh-note">Checking automatically. Go get coffee.</p>
 </div>
 
 <script>
@@ -316,31 +316,35 @@
     }
   })();
 
-  // ── Auto-refresh countdown ────────────────────────────────
-  let seconds = 30;
+  // ── Health check — polls until the real site is back ───────
+  let checkInterval = 10;
+  let countdown = checkInterval;
   const el = document.getElementById('countdown');
+
+  // Update the countdown display every second
   setInterval(() => {
-    seconds--;
-    if (el) el.textContent = seconds;
-    if (seconds <= 0) {
-      window.location.reload();
-    }
+    countdown--;
+    if (countdown < 0) countdown = 0;
+    if (el) el.textContent = countdown;
   }, 1000);
 
-  // ── Health check — redirect back when site recovers ───────
   async function checkHealth() {
     try {
       const res = await fetch('/api/v1/health', { cache: 'no-store' });
-      if (!res.ok) return;
+      if (!res.ok) { countdown = checkInterval; return; }
       // Verify we got a real JSON API response, not the maintenance HTML
       const ct = res.headers.get('content-type') || '';
-      if (!ct.includes('application/json')) return;
+      if (!ct.includes('application/json')) { countdown = checkInterval; return; }
+      // Site is back — redirect to where the user was
       const returnPath = sessionStorage.getItem('qbe-maintenance-return') || '/';
       sessionStorage.removeItem('qbe-maintenance-return');
       window.location.href = returnPath;
-    } catch { /* still down */ }
+    } catch {
+      // Still down — reset countdown for next check
+      countdown = checkInterval;
+    }
   }
-  setInterval(checkHealth, 10000);
+  setInterval(checkHealth, checkInterval * 1000);
   // Check immediately on load too
   checkHealth();
 </script>
