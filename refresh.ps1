@@ -115,9 +115,15 @@ Invoke-Cmd "Stop UI container" {
     docker compose rm -sf qb-engineer-ui 2>$null
 }
 
-# Build and start the maintenance container
+# Build maintenance image only if it doesn't exist yet
+$imgExists = docker image inspect qb-maintenance 2>$null
+if (-not $imgExists) {
+    Invoke-Cmd "Build maintenance image (first time)" {
+        docker build -q -t qb-maintenance maintenance/
+    }
+}
+
 Invoke-Cmd "Start maintenance dragon" {
-    docker build -q -t qb-maintenance maintenance/
     docker rm -f qb-maintenance 2>$null
     docker run -d --name qb-maintenance `
         -p $maintPortMap `

@@ -149,8 +149,11 @@ fi
 docker compose stop qb-engineer-ui 2>/dev/null || true
 docker compose rm -sf qb-engineer-ui 2>/dev/null || true
 
-# Build and start the maintenance container on the same port
-docker build -q -t qb-maintenance maintenance/
+# Build maintenance image only if it doesn't exist yet
+if ! docker image inspect qb-maintenance &>/dev/null; then
+    echo "    Building maintenance image (first time only)..."
+    docker build -q -t qb-maintenance maintenance/
+fi
 docker rm -f qb-maintenance 2>/dev/null || true
 docker run -d --name qb-maintenance \
     -p "${MAINT_PORT_MAP}" \
