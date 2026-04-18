@@ -93,12 +93,22 @@ Write-Ok "Wrote $versionPath"
 
 Write-Step "Swapping in maintenance page"
 
-# Detect SSL mode and port from .env
+# Detect actual host port — override file takes precedence over .env
 $uiPort = "4200"
-$envContent = Get-Content ".env" -ErrorAction SilentlyContinue
-if ($envContent) {
-    $portLine = $envContent | Where-Object { $_ -match "^UI_PORT=" }
-    if ($portLine) { $uiPort = ($portLine -split "=", 2)[1].Trim() }
+if (Test-Path "docker-compose.override.yml") {
+    $overrideContent = Get-Content "docker-compose.override.yml" -Raw -ErrorAction SilentlyContinue
+    # Look for the qb-engineer-ui service's port mapping (e.g. "443:443")
+    if ($overrideContent -match 'qb-engineer-ui[\s\S]*?ports:\s*\n\s*-\s*"(\d+):\d+"') {
+        $uiPort = $Matches[1]
+    }
+}
+if ($uiPort -eq "4200") {
+    # No override found, fall back to .env
+    $envContent = Get-Content ".env" -ErrorAction SilentlyContinue
+    if ($envContent) {
+        $portLine = $envContent | Where-Object { $_ -match "^UI_PORT=" }
+        if ($portLine) { $uiPort = ($portLine -split "=", 2)[1].Trim() }
+    }
 }
 
 if ($uiPort -eq "443") {
