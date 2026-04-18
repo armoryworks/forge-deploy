@@ -130,12 +130,43 @@ if [[ -d "$VERSION_DIR" ]]; then
 fi
 
 # ─────────────────────────────────────────────────────────────
+# Spin up maintenance page before tearing down the real site
+# ─────────────────────────────────────────────────────────────
+
+step "Swapping in maintenance page"
+
+# Detect SSL mode and port from UI_PORT
+UI_HOST_PORT="$(grep '^UI_PORT=' .env 2>/dev/null | cut -d= -f2 || echo '4200')"
+if [[ "$UI_HOST_PORT" == "443" ]]; then
+    MAINT_SSL="true"
+    MAINT_PORT_MAP="${UI_HOST_PORT}:443"
+else
+    MAINT_SSL="false"
+    MAINT_PORT_MAP="${UI_HOST_PORT}:80"
+fi
+
+# Stop the real UI first to free the port
+docker compose stop qb-engineer-ui 2>/dev/null || true
+docker compose rm -sf qb-engineer-ui 2>/dev/null || true
+
+# Build and start the maintenance container on the same port
+docker build -q -t qb-maintenance maintenance/
+docker rm -f qb-maintenance 2>/dev/null || true
+docker run -d --name qb-maintenance \
+    -p "${MAINT_PORT_MAP}" \
+    -e SSL_MODE="${MAINT_SSL}" \
+    --restart no \
+    qb-maintenance
+
+ok "Maintenance dragon is guarding port ${UI_HOST_PORT}"
+
+# ─────────────────────────────────────────────────────────────
 # Remove running app containers (preserve db + storage volumes)
 # ─────────────────────────────────────────────────────────────
 
 step "Removing app containers"
-docker compose rm -sf qb-engineer-ui qb-engineer-api 2>/dev/null || true
-ok "Removed UI + API containers"
+docker compose rm -sf qb-engineer-api 2>/dev/null || true
+ok "Removed API container"
 
 # ─────────────────────────────────────────────────────────────
 # Check for dependency changes
@@ -176,12 +207,12 @@ if $RECREATE_DB; then
     warn "RECREATE_DB=true — database will be wiped and reseeded"
 fi
 
+# Start everything except UI — maintenance container holds the port
 docker compose up -d --force-recreate --remove-orphans \
     qb-engineer-db \
     qb-engineer-storage \
     qb-engineer-backup \
-    qb-engineer-api \
-    qb-engineer-ui
+    qb-engineer-api
 
 # --- Optional: AI ---
 if $INCLUDE_AI; then
@@ -233,6 +264,15 @@ if $HEALTHY; then
 else
     warn "API health check timed out after ${MAX_WAIT}s — check logs: docker compose logs -f qb-engineer-api"
 fi
+
+# ─────────────────────────────────────────────────────────────
+# Swap maintenance container → real UI
+# ─────────────────────────────────────────────────────────────
+
+step "Swapping maintenance page for real UI"
+docker rm -f qb-maintenance 2>/dev/null || true
+docker compose up -d --force-recreate qb-engineer-ui
+ok "Real UI is live — dragon dismissed"
 
 # Reset RECREATE_DB so next restart doesn't wipe again
 if $RECREATE_DB; then

@@ -89,11 +89,49 @@ $versionPath = Join-Path (Get-Location) "qb-engineer-ui\public\assets\version.js
 Set-Content -Path $versionPath -Value $versionJson -Encoding UTF8 -NoNewline
 Write-Ok "Wrote $versionPath"
 
-# --- Remove running app containers (preserve db + storage volumes) ---
+# --- Swap in maintenance page before tearing down the real site ---
+
+Write-Step "Swapping in maintenance page"
+
+# Detect SSL mode and port from .env
+$uiPort = "4200"
+$envContent = Get-Content ".env" -ErrorAction SilentlyContinue
+if ($envContent) {
+    $portLine = $envContent | Where-Object { $_ -match "^UI_PORT=" }
+    if ($portLine) { $uiPort = ($portLine -split "=", 2)[1].Trim() }
+}
+
+if ($uiPort -eq "443") {
+    $maintSsl = "true"
+    $maintPortMap = "${uiPort}:443"
+} else {
+    $maintSsl = "false"
+    $maintPortMap = "${uiPort}:80"
+}
+
+# Stop the real UI first to free the port
+Invoke-Cmd "Stop UI container" {
+    docker compose stop qb-engineer-ui 2>$null
+    docker compose rm -sf qb-engineer-ui 2>$null
+}
+
+# Build and start the maintenance container
+Invoke-Cmd "Start maintenance dragon" {
+    docker build -q -t qb-maintenance maintenance/
+    docker rm -f qb-maintenance 2>$null
+    docker run -d --name qb-maintenance `
+        -p $maintPortMap `
+        -e "SSL_MODE=$maintSsl" `
+        --restart no `
+        qb-maintenance
+}
+Write-Ok "Maintenance dragon is guarding port $uiPort"
+
+# --- Remove remaining app containers (preserve db + storage volumes) ---
 
 Write-Step "Removing app containers"
-Invoke-Cmd "Remove UI + API containers" {
-    docker compose rm -sf qb-engineer-ui qb-engineer-api
+Invoke-Cmd "Remove API container" {
+    docker compose rm -sf qb-engineer-api
 }
 
 # --- Refresh node_modules volume if package.json changed ---
@@ -128,12 +166,12 @@ if ($RecreateDb) {
     Write-Warn "RECREATE_DB=true -- database will be wiped and reseeded"
 }
 
+# Start everything except UI — maintenance container holds the port
 $coreServices = @(
     "qb-engineer-db",
     "qb-engineer-storage",
     "qb-engineer-backup",
-    "qb-engineer-api",
-    "qb-engineer-ui"
+    "qb-engineer-api"
 )
 
 Invoke-Cmd "docker compose up -d (core)" {
@@ -187,6 +225,13 @@ if ($healthy) {
 } else {
     Write-Warn "API health check timed out after $maxWait s - check logs: docker compose logs -f qb-engineer-api"
 }
+
+# --- Swap maintenance container -> real UI ---
+
+Write-Step "Swapping maintenance page for real UI"
+Invoke-Cmd "Remove maintenance container" { docker rm -f qb-maintenance 2>$null }
+Invoke-Cmd "Start real UI" { docker compose up -d --force-recreate qb-engineer-ui }
+Write-Ok "Real UI is live — dragon dismissed"
 
 # --- Status ---
 

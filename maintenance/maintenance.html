@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QB Engineer — Under Maintenance</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #0f1117;
+    color: #e2e8f0;
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    overflow: hidden;
+  }
+
+  .scene {
+    position: relative;
+    text-align: center;
+    padding: 2rem;
+    max-width: 680px;
+  }
+
+  /* ── Dragon ─────────────────────────── */
+  .dragon-wrapper {
+    position: relative;
+    display: inline-block;
+    margin-bottom: 1.5rem;
+  }
+
+  .dragon {
+    width: 220px;
+    height: 220px;
+    animation: bob 3s ease-in-out infinite;
+    filter: drop-shadow(0 8px 24px rgba(99, 102, 241, 0.3));
+  }
+
+  @keyframes bob {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-12px); }
+  }
+
+  /* ── Speech bubble ─────────────────── */
+  .speech-bubble {
+    position: absolute;
+    top: -10px;
+    right: -100px;
+    background: #1e2030;
+    border: 2px solid #6366f1;
+    padding: 10px 16px;
+    font-size: 1.4rem;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: #f87171;
+    white-space: nowrap;
+    animation: shake 0.6s ease-in-out infinite alternate;
+  }
+
+  .speech-bubble::after {
+    content: '';
+    position: absolute;
+    bottom: -12px;
+    left: 20px;
+    width: 0;
+    height: 0;
+    border-left: 12px solid transparent;
+    border-right: 12px solid transparent;
+    border-top: 12px solid #6366f1;
+  }
+
+  .speech-bubble::before {
+    content: '';
+    position: absolute;
+    bottom: -9px;
+    left: 22px;
+    width: 0;
+    height: 0;
+    border-left: 10px solid transparent;
+    border-right: 10px solid transparent;
+    border-top: 10px solid #1e2030;
+    z-index: 1;
+  }
+
+  @keyframes shake {
+    0% { transform: rotate(-2deg); }
+    100% { transform: rotate(2deg); }
+  }
+
+  /* ── Text ───────────────────────────── */
+  h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    margin-bottom: 0.75rem;
+    color: #fff;
+  }
+
+  h1 span {
+    color: #6366f1;
+  }
+
+  .subtitle {
+    font-size: 1.1rem;
+    color: #94a3b8;
+    margin-bottom: 1.5rem;
+    line-height: 1.6;
+  }
+
+  .encouragement {
+    background: #1e2030;
+    border-left: 3px solid #f59e0b;
+    padding: 16px 20px;
+    text-align: left;
+    margin-bottom: 1.5rem;
+    font-size: 0.95rem;
+    line-height: 1.7;
+    color: #cbd5e1;
+  }
+
+  .encouragement strong {
+    color: #f59e0b;
+  }
+
+  .status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    font-size: 0.85rem;
+    color: #64748b;
+  }
+
+  .pulse-dot {
+    width: 8px;
+    height: 8px;
+    background: #f59e0b;
+    border-radius: 50%;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.8); }
+  }
+
+  /* ── Smoke particles ───────────────── */
+  .smoke {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .smoke-particle {
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    background: rgba(99, 102, 241, 0.15);
+    border-radius: 50%;
+    animation: rise linear infinite;
+  }
+
+  .smoke-particle:nth-child(1) { left: 15%; animation-duration: 6s; animation-delay: 0s; }
+  .smoke-particle:nth-child(2) { left: 35%; animation-duration: 8s; animation-delay: 1s; }
+  .smoke-particle:nth-child(3) { left: 55%; animation-duration: 7s; animation-delay: 2s; }
+  .smoke-particle:nth-child(4) { left: 75%; animation-duration: 9s; animation-delay: 0.5s; }
+  .smoke-particle:nth-child(5) { left: 85%; animation-duration: 6.5s; animation-delay: 3s; }
+  .smoke-particle:nth-child(6) { left: 25%; animation-duration: 7.5s; animation-delay: 1.5s; }
+  .smoke-particle:nth-child(7) { left: 65%; animation-duration: 8.5s; animation-delay: 2.5s; }
+  .smoke-particle:nth-child(8) { left: 45%; animation-duration: 5.5s; animation-delay: 0.8s; }
+
+  @keyframes rise {
+    0% { bottom: -10px; opacity: 0; transform: translateX(0) scale(1); }
+    20% { opacity: 0.6; }
+    80% { opacity: 0.2; }
+    100% { bottom: 100%; opacity: 0; transform: translateX(30px) scale(3); }
+  }
+
+  /* ── Auto-refresh countdown ────────── */
+  .refresh-note {
+    margin-top: 1rem;
+    font-size: 0.8rem;
+    color: #475569;
+  }
+
+  @media (max-width: 600px) {
+    .speech-bubble {
+      right: -60px;
+      top: -15px;
+      font-size: 1.1rem;
+    }
+    h1 { font-size: 1.5rem; }
+    .dragon { width: 160px; height: 160px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="smoke">
+  <div class="smoke-particle"></div>
+  <div class="smoke-particle"></div>
+  <div class="smoke-particle"></div>
+  <div class="smoke-particle"></div>
+  <div class="smoke-particle"></div>
+  <div class="smoke-particle"></div>
+  <div class="smoke-particle"></div>
+  <div class="smoke-particle"></div>
+</div>
+
+<div class="scene">
+  <div class="dragon-wrapper">
+    <!-- Inline SVG: cute maintenance dragon -->
+    <svg class="dragon" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+      <!-- Body -->
+      <ellipse cx="100" cy="130" rx="55" ry="45" fill="#6366f1"/>
+      <!-- Belly -->
+      <ellipse cx="100" cy="140" rx="35" ry="30" fill="#818cf8"/>
+      <!-- Head -->
+      <circle cx="100" cy="75" r="35" fill="#6366f1"/>
+      <!-- Snout -->
+      <ellipse cx="100" cy="90" rx="18" ry="12" fill="#818cf8"/>
+      <!-- Nostrils -->
+      <circle cx="94" cy="88" r="2.5" fill="#4338ca"/>
+      <circle cx="106" cy="88" r="2.5" fill="#4338ca"/>
+      <!-- Eyes - mischievous look -->
+      <ellipse cx="86" cy="70" rx="8" ry="9" fill="white"/>
+      <ellipse cx="114" cy="70" rx="8" ry="9" fill="white"/>
+      <circle cx="89" cy="70" r="5" fill="#1e1b4b"/>
+      <circle cx="117" cy="70" r="5" fill="#1e1b4b"/>
+      <!-- Eye shine -->
+      <circle cx="91" cy="68" r="2" fill="white"/>
+      <circle cx="119" cy="68" r="2" fill="white"/>
+      <!-- Eyebrows - slightly raised, mischievous -->
+      <path d="M78 60 Q86 55 94 60" stroke="#4338ca" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+      <path d="M106 60 Q114 55 122 60" stroke="#4338ca" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+      <!-- Cheeky grin -->
+      <path d="M88 96 Q100 106 112 96" stroke="#4338ca" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+      <!-- Tiny fang -->
+      <path d="M95 96 L93 101 L97 97" fill="white"/>
+      <!-- Horns -->
+      <path d="M75 55 L65 35 L80 50" fill="#f59e0b"/>
+      <path d="M125 55 L135 35 L120 50" fill="#f59e0b"/>
+      <!-- Wings -->
+      <path d="M45 115 Q20 80 40 60 Q50 75 55 100 Q45 85 50 70 Q55 85 58 110" fill="#818cf8" opacity="0.8"/>
+      <path d="M155 115 Q180 80 160 60 Q150 75 145 100 Q155 85 150 70 Q145 85 142 110" fill="#818cf8" opacity="0.8"/>
+      <!-- Arms holding wrench -->
+      <ellipse cx="65" cy="135" rx="10" ry="8" fill="#6366f1"/>
+      <ellipse cx="135" cy="135" rx="10" ry="8" fill="#6366f1"/>
+      <!-- Wrench -->
+      <g transform="translate(55, 125) rotate(-30)">
+        <rect x="0" y="8" width="35" height="5" rx="2" fill="#94a3b8"/>
+        <circle cx="0" cy="10" r="8" fill="none" stroke="#94a3b8" stroke-width="4"/>
+        <rect x="33" y="5" width="8" height="11" rx="1" fill="#94a3b8"/>
+      </g>
+      <!-- Feet -->
+      <ellipse cx="80" cy="172" rx="14" ry="8" fill="#4f46e5"/>
+      <ellipse cx="120" cy="172" rx="14" ry="8" fill="#4f46e5"/>
+      <!-- Tail -->
+      <path d="M155 145 Q175 145 180 130 Q185 120 175 115" stroke="#6366f1" stroke-width="8" fill="none" stroke-linecap="round"/>
+      <path d="M175 115 L170 105 L180 112 L172 108" fill="#f59e0b"/>
+      <!-- Smoke puff from nostrils -->
+      <circle cx="85" cy="82" r="3" fill="#94a3b8" opacity="0.4">
+        <animate attributeName="cy" values="82;72;62" dur="2s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.4;0.2;0" dur="2s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="3;5;7" dur="2s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="115" cy="82" r="3" fill="#94a3b8" opacity="0.4">
+        <animate attributeName="cy" values="82;70;58" dur="2.5s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.4;0.2;0" dur="2.5s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="3;5;8" dur="2.5s" repeatCount="indefinite"/>
+      </circle>
+    </svg>
+
+    <div class="speech-bubble">@#$%&amp;!</div>
+  </div>
+
+  <h1>We're <span>tinkering</span> with things.</h1>
+
+  <p class="subtitle">
+    The developers are elbows-deep in the engine room doing
+    things they probably shouldn't be doing unsupervised.
+  </p>
+
+  <div class="encouragement">
+    <strong>Frustrated?</strong> Us too. Feel free to express yourself
+    creatively using the vocabulary of your choice. We certainly are.<br><br>
+    The dragon above has already said what we're all thinking.
+    We'll be back shortly &mdash; assuming nothing else catches fire.
+  </div>
+
+  <div class="status-bar">
+    <div class="pulse-dot"></div>
+    <span>Maintenance in progress &mdash; refreshing in <span id="countdown">30</span>s</span>
+  </div>
+
+  <p class="refresh-note">This page auto-refreshes. Go get coffee.</p>
+</div>
+
+<script>
+  // ── Save where the user was trying to go ──────────────────
+  // The maintenance container redirects all routes here.
+  // Capture the original path so we can send them back when the site recovers.
+  (function() {
+    const path = window.location.pathname + window.location.search + window.location.hash;
+    // Don't overwrite if we already saved a path (page reloads shouldn't reset it)
+    if (!sessionStorage.getItem('qbe-maintenance-return') && path !== '/' && path !== '/maintenance.html') {
+      sessionStorage.setItem('qbe-maintenance-return', path);
+    }
+  })();
+
+  // ── Auto-refresh countdown ────────────────────────────────
+  let seconds = 30;
+  const el = document.getElementById('countdown');
+  setInterval(() => {
+    seconds--;
+    if (el) el.textContent = seconds;
+    if (seconds <= 0) {
+      window.location.reload();
+    }
+  }, 1000);
+
+  // ── Health check — redirect back when site recovers ───────
+  async function checkHealth() {
+    try {
+      const res = await fetch('/api/v1/health', { cache: 'no-store' });
+      if (!res.ok) return;
+      // Verify we got a real JSON API response, not the maintenance HTML
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) return;
+      const returnPath = sessionStorage.getItem('qbe-maintenance-return') || '/';
+      sessionStorage.removeItem('qbe-maintenance-return');
+      window.location.href = returnPath;
+    } catch { /* still down */ }
+  }
+  setInterval(checkHealth, 10000);
+  // Check immediately on load too
+  checkHealth();
+</script>
+
+</body>
+</html>
