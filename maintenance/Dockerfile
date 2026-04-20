@@ -3,6 +3,7 @@ FROM nginx:alpine
 RUN apk add --no-cache openssl
 
 COPY maintenance.html /usr/share/nginx/html/maintenance.html
+COPY maintenance.js /usr/share/nginx/html/maintenance.js
 COPY nginx-dual.conf /etc/nginx/conf.d/nginx-dual.conf
 COPY entrypoint.sh /entrypoint.sh
 
