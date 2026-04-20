@@ -93,25 +93,53 @@ Write-Ok "Wrote $versionPath"
 
 Write-Step "Swapping in maintenance page"
 
-# Detect actual host port — override file takes precedence over .env
-$uiPort = "4200"
-if (Test-Path "docker-compose.override.yml") {
-    $overrideContent = Get-Content "docker-compose.override.yml" -Raw -ErrorAction SilentlyContinue
-    # Look for the qb-engineer-ui service's port mapping (e.g. "443:443")
-    if ($overrideContent -match 'qb-engineer-ui[\s\S]*?ports:\s*\n\s*-\s*"(\d+):\d+"') {
-        $uiPort = $Matches[1]
-    }
-}
-if ($uiPort -eq "4200") {
-    # No override found, fall back to .env
-    $envContent = Get-Content ".env" -ErrorAction SilentlyContinue
-    if ($envContent) {
-        $portLine = $envContent | Where-Object { $_ -match "^UI_PORT=" }
-        if ($portLine) { $uiPort = ($portLine -split "=", 2)[1].Trim() }
+# Detect host port from the ACTUAL running UI container first — whatever port
+# the real UI is bound to, maintenance takes over. This avoids drift between
+# .env, override YAML, and whatever's actually live.
+$uiPort = ""
+$uiContainerPort = ""
+$uiInspect = docker inspect qb-engineer-ui 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
+if ($uiInspect) {
+    $portsObj = $uiInspect[0].NetworkSettings.Ports
+    if ($portsObj) {
+        foreach ($prop in $portsObj.PSObject.Properties) {
+            if ($prop.Value) {
+                # prop.Name is "80/tcp", prop.Value is array of host bindings
+                $containerSide = ($prop.Name -split "/")[0]
+                $hostSide = $prop.Value[0].HostPort
+                if ($hostSide) {
+                    $uiPort = $hostSide
+                    $uiContainerPort = $containerSide
+                    Write-Ok "Detected live UI binding: $uiPort -> container $uiContainerPort"
+                    break
+                }
+            }
+        }
     }
 }
 
-if ($uiPort -eq "443") {
+# Fallback chain if no running container: override file -> .env -> default.
+if (-not $uiPort) {
+    if (Test-Path "docker-compose.override.yml") {
+        $overrideContent = Get-Content "docker-compose.override.yml" -Raw -ErrorAction SilentlyContinue
+        # Match both quoted "443:443" and unquoted 443:443 YAML forms.
+        if ($overrideContent -match 'qb-engineer-ui[\s\S]*?ports:\s*\n\s*-\s*"?(\d+):\d+"?') {
+            $uiPort = $Matches[1]
+        }
+    }
+    if (-not $uiPort) {
+        $envContent = Get-Content ".env" -ErrorAction SilentlyContinue
+        if ($envContent) {
+            $portLine = $envContent | Where-Object { $_ -match "^UI_PORT=" }
+            if ($portLine) { $uiPort = ($portLine -split "=", 2)[1].Trim() }
+        }
+    }
+    if (-not $uiPort) { $uiPort = "4200" }
+    Write-Warn "No running UI container - falling back to detected port $uiPort"
+}
+
+# SSL mode if either side is 443.
+if ($uiPort -eq "443" -or $uiContainerPort -eq "443") {
     $maintSsl = "true"
     $maintPortMap = "${uiPort}:443"
 } else {
