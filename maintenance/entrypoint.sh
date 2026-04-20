@@ -10,12 +10,20 @@
 #
 # The refresh script decides which host ports to publish.
 
-echo "[maintenance] Generating self-signed certificate"
 mkdir -p /etc/nginx/certs
-openssl req -x509 -nodes -days 1 -newkey rsa:2048 \
-    -keyout /etc/nginx/certs/selfsigned.key \
-    -out /etc/nginx/certs/selfsigned.crt \
-    -subj "/CN=maintenance" 2>/dev/null
+
+# If the host mounted real certs (e.g. Cloudflare Origin Cert for Full-strict),
+# reuse them so CF / reverse proxies don't reject the maintenance page during
+# refresh. Otherwise fall back to a throwaway self-signed cert.
+if [ -s /etc/nginx/certs/selfsigned.crt ] && [ -s /etc/nginx/certs/selfsigned.key ]; then
+    echo "[maintenance] Using mounted certificate from /etc/nginx/certs"
+else
+    echo "[maintenance] No mounted cert found — generating self-signed fallback"
+    openssl req -x509 -nodes -days 1 -newkey rsa:2048 \
+        -keyout /etc/nginx/certs/selfsigned.key \
+        -out /etc/nginx/certs/selfsigned.crt \
+        -subj "/CN=maintenance" 2>/dev/null
+fi
 
 cp /etc/nginx/conf.d/nginx-dual.conf /etc/nginx/conf.d/default.conf
 

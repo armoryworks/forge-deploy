@@ -214,6 +214,13 @@ build_run_args() {
     if [[ -n "$COMPOSE_NETWORK" ]]; then
         arr+=(--network "$COMPOSE_NETWORK" --network-alias qb-engineer-ui)
     fi
+    # Mount the same cert the real UI uses (Cloudflare Origin Cert, Let's
+    # Encrypt, etc.) so CF Full-strict and strict reverse proxies accept
+    # the maintenance page during refresh. Falls through to self-signed
+    # inside the container if ./certs doesn't exist.
+    if [[ -f ./certs/selfsigned.crt && -f ./certs/selfsigned.key ]]; then
+        arr+=(-v "$(pwd)/certs:/etc/nginx/certs:ro")
+    fi
     for map in "${MAINT_PORT_MAPS[@]}"; do
         arr+=(-p "$map")
     done

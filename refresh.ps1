@@ -169,6 +169,13 @@ function Build-RunArgs([string[]]$portMaps) {
     if ($composeNetwork) {
         $args += @("--network", $composeNetwork, "--network-alias", "qb-engineer-ui")
     }
+    # Mount the same cert the real UI uses (Cloudflare Origin Cert, Let's
+    # Encrypt, etc.) so CF Full-strict and strict reverse proxies accept
+    # the maintenance page during refresh. Falls through to self-signed
+    # inside the container if .\certs doesn't exist.
+    if ((Test-Path ".\certs\selfsigned.crt") -and (Test-Path ".\certs\selfsigned.key")) {
+        $args += @("-v", "$((Get-Location).Path)\certs:/etc/nginx/certs:ro")
+    }
     foreach ($m in $portMaps) { $args += @("-p", $m) }
     $args += "qb-maintenance"
     return $args
