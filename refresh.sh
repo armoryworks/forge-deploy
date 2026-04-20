@@ -172,33 +172,68 @@ if [[ -z "$UI_HOST_PORT" ]]; then
     warn "No running UI container — falling back to detected port ${UI_HOST_PORT}"
 fi
 
-# Infer SSL mode from either the host port (443) or the container port (443),
-# since either side being 443 implies the real UI serves TLS.
-if [[ "$UI_HOST_PORT" == "443" || "$UI_CONTAINER_PORT" == "443" ]]; then
-    MAINT_SSL="true"
-    MAINT_PORT_MAP="${UI_HOST_PORT}:443"
+# Build the host port map. Maintenance nginx always listens on BOTH :80 and
+# :443 internally (with a self-signed cert on :443), so a browser that does
+# HTTPS-Only upgrade, cached HSTS, or just picks the wrong scheme still lands
+# on the maintenance page instead of "can't connect".
+#
+# When the real UI is on a standard port (80 or 443), we publish BOTH host
+# ports — the maintenance page covers http:// and https:// regardless of
+# which the user's browser tries. For dev ports (4200 etc.) we publish only
+# the one port (and also tack on :443 since HTTPS-Only can still bite).
+declare -a MAINT_PORT_MAPS=()
+if [[ "$UI_HOST_PORT" == "80" || "$UI_HOST_PORT" == "443" ]]; then
+    MAINT_PORT_MAPS+=("80:80" "443:443")
 else
-    MAINT_SSL="false"
-    MAINT_PORT_MAP="${UI_HOST_PORT}:80"
+    # Dev port: publish that port -> container :80, plus try to also grab :443.
+    MAINT_PORT_MAPS+=("${UI_HOST_PORT}:80" "443:443")
 fi
 
-# Stop the real UI first to free the port
+# Stop the real UI first to free the port(s)
 docker compose stop qb-engineer-ui 2>/dev/null || true
 docker compose rm -sf qb-engineer-ui 2>/dev/null || true
 
-# Build maintenance image only if it doesn't exist yet
-if ! docker image inspect qb-maintenance &>/dev/null; then
-    echo "    Building maintenance image (first time only)..."
-    docker build -q -t qb-maintenance maintenance/
-fi
+# Always rebuild the maintenance image — Dockerfile copies are fast when the
+# nginx:alpine base is cached, and this ensures config changes land reliably
+# without requiring a manual rebuild.
+echo "    Building maintenance image..."
+docker build -q -t qb-maintenance maintenance/ >/dev/null
 docker rm -f qb-maintenance 2>/dev/null || true
-docker run -d --name qb-maintenance \
-    -p "${MAINT_PORT_MAP}" \
-    -e SSL_MODE="${MAINT_SSL}" \
-    --restart no \
-    qb-maintenance
 
-ok "Maintenance dragon is guarding port ${UI_HOST_PORT}"
+# Detect the compose network name so maintenance can register as a
+# `qb-engineer-ui` alias — any reverse proxy (Nginx Proxy Manager, Traefik,
+# Caddy) that points at the compose hostname continues to resolve during
+# refresh instead of hitting a dead upstream.
+COMPOSE_NETWORK=$(docker network ls --format '{{.Name}}' | grep -E '^qb-engineer-wrapper_' | head -1 || true)
+
+# Assemble the `docker run` invocation — try dual-port first, fall back to
+# single-port if :443 is already taken by something else on the host.
+build_run_args() {
+    local -n arr=$1
+    arr=(-d --name qb-maintenance --restart no)
+    if [[ -n "$COMPOSE_NETWORK" ]]; then
+        arr+=(--network "$COMPOSE_NETWORK" --network-alias qb-engineer-ui)
+    fi
+    for map in "${MAINT_PORT_MAPS[@]}"; do
+        arr+=(-p "$map")
+    done
+    arr+=(qb-maintenance)
+}
+
+declare -a RUN_ARGS
+build_run_args RUN_ARGS
+
+if ! docker run "${RUN_ARGS[@]}" &>/dev/null; then
+    warn "Dual-port bind failed (likely :443 occupied) — retrying with primary port only"
+    docker rm -f qb-maintenance 2>/dev/null || true
+    MAINT_PORT_MAPS=("${UI_HOST_PORT}:80")
+    [[ "$UI_HOST_PORT" == "443" ]] && MAINT_PORT_MAPS=("443:443")
+    build_run_args RUN_ARGS
+    docker run "${RUN_ARGS[@]}" >/dev/null
+fi
+
+ok "Maintenance dragon is guarding ports: ${MAINT_PORT_MAPS[*]}"
+[[ -n "$COMPOSE_NETWORK" ]] && ok "  attached to ${COMPOSE_NETWORK} as qb-engineer-ui"
 
 # ─────────────────────────────────────────────────────────────
 # Remove running app containers (preserve db + storage volumes)

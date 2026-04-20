@@ -138,38 +138,57 @@ if (-not $uiPort) {
     Write-Warn "No running UI container - falling back to detected port $uiPort"
 }
 
-# SSL mode if either side is 443.
-if ($uiPort -eq "443" -or $uiContainerPort -eq "443") {
-    $maintSsl = "true"
-    $maintPortMap = "${uiPort}:443"
+# Maintenance nginx always listens on BOTH :80 and :443 internally (with a
+# self-signed cert), so HTTPS-Only / cached HSTS browsers still land on the
+# maintenance page. On standard ports we publish both host ports; on dev
+# ports we publish that port plus :443 for the HTTPS-upgrade path.
+if ($uiPort -eq "80" -or $uiPort -eq "443") {
+    $maintPortMaps = @("80:80", "443:443")
 } else {
-    $maintSsl = "false"
-    $maintPortMap = "${uiPort}:80"
+    $maintPortMaps = @("${uiPort}:80", "443:443")
 }
 
-# Stop the real UI first to free the port
+# Stop the real UI first to free the port(s)
 Invoke-Cmd "Stop UI container" {
     docker compose stop qb-engineer-ui 2>$null
     docker compose rm -sf qb-engineer-ui 2>$null
 }
 
-# Build maintenance image only if it doesn't exist yet
-$imgExists = docker image inspect qb-maintenance 2>$null
-if (-not $imgExists) {
-    Invoke-Cmd "Build maintenance image (first time)" {
-        docker build -q -t qb-maintenance maintenance/
+# Always rebuild the maintenance image — nginx:alpine base is cached and
+# this ensures config changes land without needing a manual rebuild.
+Invoke-Cmd "Build maintenance image" {
+    docker build -q -t qb-maintenance maintenance/ | Out-Null
+}
+
+# Attach maintenance to the compose network as alias `qb-engineer-ui` so
+# reverse proxies that target the container hostname keep resolving during refresh.
+$composeNetwork = (docker network ls --format '{{.Name}}' | Select-String -Pattern '^qb-engineer-wrapper_' | Select-Object -First 1).ToString().Trim()
+
+function Build-RunArgs([string[]]$portMaps) {
+    $args = @("-d", "--name", "qb-maintenance", "--restart", "no")
+    if ($composeNetwork) {
+        $args += @("--network", $composeNetwork, "--network-alias", "qb-engineer-ui")
     }
+    foreach ($m in $portMaps) { $args += @("-p", $m) }
+    $args += "qb-maintenance"
+    return $args
 }
 
 Invoke-Cmd "Start maintenance dragon" {
-    docker rm -f qb-maintenance 2>$null
-    docker run -d --name qb-maintenance `
-        -p $maintPortMap `
-        -e "SSL_MODE=$maintSsl" `
-        --restart no `
-        qb-maintenance
+    docker rm -f qb-maintenance 2>$null | Out-Null
+    $runArgs = Build-RunArgs $maintPortMaps
+    docker run @runArgs 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "Dual-port bind failed (likely :443 occupied) - retrying with primary port only"
+        docker rm -f qb-maintenance 2>$null | Out-Null
+        $fallback = if ($uiPort -eq "443") { @("443:443") } else { @("${uiPort}:80") }
+        $runArgs = Build-RunArgs $fallback
+        docker run @runArgs | Out-Null
+        $script:maintPortMaps = $fallback
+    }
 }
-Write-Ok "Maintenance dragon is guarding port $uiPort"
+Write-Ok ("Maintenance dragon is guarding ports: " + ($maintPortMaps -join ", "))
+if ($composeNetwork) { Write-Ok "  attached to $composeNetwork as qb-engineer-ui" }
 
 # --- Remove remaining app containers (preserve db + storage volumes) ---
 
