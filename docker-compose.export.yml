@@ -1,0 +1,72 @@
+# Ephemeral export stack — stands up a throwaway Postgres + API, seeds it,
+# dumps every business entity to JSON under ./qb-engineer-ui/public/demo-data,
+# then exits. Does NOT touch the dev database or dev stack.
+#
+# Usage (prefer the wrapper scripts):
+#   ./export-demo-data.sh    (bash / WSL / Linux / macOS)
+#   .\export-demo-data.ps1   (Windows PowerShell)
+#
+# Manual invocation — the `-p qb-engineer-export` project flag is REQUIRED
+# so this stack doesn't collide with the dev stack in `docker compose ps`:
+#   docker compose -p qb-engineer-export -f docker-compose.export.yml up --abort-on-container-exit --build
+#   docker compose -p qb-engineer-export -f docker-compose.export.yml down -v
+#
+# Container names are `*-export` to avoid any collision with a running dev stack.
+# No host ports are published. Postgres data is tmpfs (ephemeral).
+
+services:
+  qb-engineer-db-export:
+    image: pgvector/pgvector:pg17
+    container_name: qb-engineer-db-export
+    environment:
+      - POSTGRES_DB=qb_engineer_export
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=export-only-not-persisted
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d qb_engineer_export"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks:
+      - export-net
+
+  qb-engineer-api-export:
+    build:
+      context: ./qb-engineer-server
+      dockerfile: qb-engineer.api/Dockerfile
+    container_name: qb-engineer-api-export
+    # Run as root so the container can write JSON into the host bind-mount.
+    # The normal image user is `appuser`; that's fine for prod but awkward
+    # for a one-shot export whose whole job is writing files to the host.
+    user: "0:0"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - RECREATE_DB=false
+      - SEED_DEMO_DATA=true
+      - SEED_USER_PASSWORD=ExportPass123!
+      - EXPORT_DEMO_DATA=/out
+      - MockIntegrations=true
+      - ConnectionStrings__DefaultConnection=Host=qb-engineer-db-export;Port=5432;Database=qb_engineer_export;Username=postgres;Password=export-only-not-persisted
+      - Jwt__Key=export-only-dummy-key-min-32-chars-padding
+      - Jwt__Issuer=qb-engineer-export
+      - Jwt__Audience=qb-engineer-export
+      - Storage__Provider=local
+      - LocalStorage__RootPath=/tmp/export-storage
+      - LocalStorage__PublicBaseUrl=http://localhost
+      - FrontendBaseUrl=http://localhost
+      - FormRendererBaseUrl=http://localhost
+    volumes:
+      - ./qb-engineer-ui/public/demo-data:/out
+      - ./docs:/app/docs:ro
+    depends_on:
+      qb-engineer-db-export:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - export-net
+
+networks:
+  export-net:
+    driver: bridge
