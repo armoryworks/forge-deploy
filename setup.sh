@@ -19,6 +19,10 @@
 #   --include-all        All optional profiles
 #   --ssl                Generate self-signed SSL cert and serve on 443
 #   --no-ssl             Skip SSL even if auto-detected as headless
+#   --cohost             Run behind an existing host-level reverse proxy
+#                        (nginx, Caddy, cloudflared). Skip in-container TLS,
+#                        keep UI on 127.0.0.1:4200.
+#   --standalone         Own the full host (nginx + TLS inside the stack).
 
 set -euo pipefail
 
@@ -27,7 +31,8 @@ FRESH=false
 INCLUDE_AI=false
 INCLUDE_TTS=false
 INCLUDE_SIGNING=false
-SSL_FLAG=""  # "" = auto-detect, "force" = --ssl, "skip" = --no-ssl
+SSL_FLAG=""   # "" = auto-detect, "force" = --ssl, "skip" = --no-ssl
+MODE_FLAG=""  # "" = auto/use .env, "cohost" or "standalone" force
 
 for arg in "$@"; do
     case $arg in
@@ -39,6 +44,8 @@ for arg in "$@"; do
         --include-all)     INCLUDE_AI=true; INCLUDE_TTS=true; INCLUDE_SIGNING=true ;;
         --ssl)             SSL_FLAG="force" ;;
         --no-ssl)          SSL_FLAG="skip" ;;
+        --cohost)          MODE_FLAG="cohost" ;;
+        --standalone)      MODE_FLAG="standalone" ;;
         *) echo "Unknown option: $arg"; exit 1 ;;
     esac
 done
@@ -116,9 +123,51 @@ if $IS_LINUX && [[ -z "${DISPLAY:-}" ]] && [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
     IS_HEADLESS=true
 fi
 
-# Resolve SSL mode
+# ─────────────────────────────────────────────────────────────
+# Hosting mode resolution (cohost vs standalone)
+# ─────────────────────────────────────────────────────────────
+# Precedence:
+#   1. --cohost / --standalone CLI flag
+#   2. QBE_HOSTING_MODE in existing .env
+#   3. Auto-detect: nginx vhost for qb-engineer, or active cloudflared
+#   4. Default: standalone
+HOSTING_MODE=""
+MODE_SOURCE=""
+
+if [[ -n "$MODE_FLAG" ]]; then
+    HOSTING_MODE="$MODE_FLAG"
+    MODE_SOURCE="CLI flag"
+elif [[ -f .env ]] && grep -q "^QBE_HOSTING_MODE=" .env 2>/dev/null; then
+    HOSTING_MODE=$(grep "^QBE_HOSTING_MODE=" .env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | xargs)
+    MODE_SOURCE=".env"
+fi
+
+if [[ -z "$HOSTING_MODE" ]]; then
+    # Auto-detect: host-level nginx vhost or active cloudflared
+    if ls /etc/nginx/sites-enabled/qb-engineer*.conf &>/dev/null 2>&1 || \
+       ls /etc/nginx/conf.d/qb-engineer*.conf &>/dev/null 2>&1; then
+        HOSTING_MODE="cohost"
+        MODE_SOURCE="detected host nginx vhost"
+    elif command -v systemctl &>/dev/null && systemctl is-active --quiet cloudflared 2>/dev/null; then
+        HOSTING_MODE="cohost"
+        MODE_SOURCE="detected active cloudflared"
+    elif [[ -f /etc/cloudflared/config.yml ]] || [[ -f /etc/cloudflared/config.yaml ]]; then
+        HOSTING_MODE="cohost"
+        MODE_SOURCE="detected cloudflared config"
+    else
+        HOSTING_MODE="standalone"
+        MODE_SOURCE="default"
+    fi
+fi
+
+IS_COHOST=false
+[[ "$HOSTING_MODE" == "cohost" ]] && IS_COHOST=true
+
+# Resolve SSL mode — cohost never enables in-container SSL (host proxy terminates TLS)
 ENABLE_SSL=false
-if [[ "$SSL_FLAG" == "force" ]]; then
+if $IS_COHOST; then
+    ENABLE_SSL=false
+elif [[ "$SSL_FLAG" == "force" ]]; then
     ENABLE_SSL=true
 elif [[ "$SSL_FLAG" == "skip" ]]; then
     ENABLE_SSL=false
@@ -167,6 +216,11 @@ fi
 
 $IS_HEADLESS && ok "Headless server detected"
 $ENABLE_SSL  && ok "SSL will be configured"
+if $IS_COHOST; then
+    ok "Hosting mode: cohost (${MODE_SOURCE}) — host-level proxy terminates TLS"
+else
+    ok "Hosting mode: standalone (${MODE_SOURCE})"
+fi
 
 # ─────────────────────────────────────────────────────────────
 # 2. Prerequisites
@@ -267,9 +321,11 @@ elif [[ -n "${FREE_GB:-}" ]]; then
 fi
 
 # --- Port check ---
+# In cohost mode, all services bind 127.0.0.1 — conflict only if another local
+# process holds the same port. In standalone+SSL, we bind 80/443 on 0.0.0.0.
 CONFLICTS=""
 CHECK_PORTS="4200 5000 5432 9000 9001"
-if $ENABLE_SSL; then
+if $ENABLE_SSL && ! $IS_COHOST; then
     CHECK_PORTS="80 443 5000 5432 9000 9001"
 fi
 for PORT in $CHECK_PORTS; do
@@ -344,8 +400,11 @@ else
     JWT_KEY=$(head -c 256 /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48 || true)
     sed -i "s|JWT_KEY=dev-secret-key-change-in-production-min-32-chars!!|JWT_KEY=${JWT_KEY}|" .env
 
-    # For headless/server installs, configure network access
-    if $IS_HEADLESS || $ENABLE_SSL; then
+    # For headless/server installs, configure network access.
+    # In cohost mode the host-level proxy owns 80/443 + the public hostname, so
+    # we keep UI on 127.0.0.1:4200 and leave URL env vars alone (user edits .env
+    # manually to set FRONTEND_BASE_URL / CORS_ORIGINS to the external hostname).
+    if ( $IS_HEADLESS || $ENABLE_SSL ) && ! $IS_COHOST; then
         HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 
         if $ENABLE_SSL; then
@@ -367,6 +426,16 @@ else
 
         # Server installs default to production-ish settings
         sed -i "s|^MOCK_INTEGRATIONS=true|MOCK_INTEGRATIONS=false|" .env
+    fi
+
+    if $IS_COHOST; then
+        # In cohost mode, the host-level proxy controls the public URL. The
+        # user must edit FRONTEND_BASE_URL / CORS_ORIGINS / MINIO_PUBLIC_ENDPOINT
+        # in .env to match the external hostname (e.g. https://qb-engineer.com).
+        sed -i "s|^MOCK_INTEGRATIONS=true|MOCK_INTEGRATIONS=false|" .env
+        warn "Cohost mode: edit .env to set FRONTEND_BASE_URL, CORS_ORIGINS, and"
+        warn "MINIO_PUBLIC_ENDPOINT to the hostname served by your reverse proxy."
+        warn "See docs/cohosting.md for the full walkthrough."
     fi
 
     # Demo data — only seeded with --seeded flag
@@ -419,6 +488,10 @@ if $FRESH; then
     warn "--fresh: database will be wiped and recreated on next start"
 fi
 
+# Persist the resolved hosting mode so future runs (including refresh.sh)
+# pick it up without re-detecting.
+set_env "QBE_HOSTING_MODE" "$HOSTING_MODE"
+
 # ─────────────────────────────────────────────────────────────
 # 5. Write version.json
 # ─────────────────────────────────────────────────────────────
@@ -444,7 +517,9 @@ fi
 NEEDS_OVERRIDE=false
 
 # ── SSL certificate ──
-if $ENABLE_SSL; then
+# Cohost mode skips in-container cert generation — the host-level proxy
+# (nginx+LE, Caddy, cloudflared tunnel) terminates TLS.
+if $ENABLE_SSL && ! $IS_COHOST; then
     step "Configuring SSL"
     CERT_DIR="./certs"
     if [[ -f "${CERT_DIR}/selfsigned.crt" && -f "${CERT_DIR}/selfsigned.key" ]]; then
@@ -524,7 +599,31 @@ MEMBLOCK
     } > docker-compose.override.yml
 
     ok "Created docker-compose.override.yml"
-    # docker-compose.override.yml is auto-loaded by docker compose — no COMPOSE_FILE needed
+fi
+
+# ─────────────────────────────────────────────────────────────
+# 6b. Manage COMPOSE_FILE based on resolved overlays
+# ─────────────────────────────────────────────────────────────
+# Rules:
+#   standalone + no override:     unset COMPOSE_FILE (auto-load override.yml)
+#   standalone + override:        unset COMPOSE_FILE (auto-load override.yml)
+#   cohost + no override:         docker-compose.yml:docker-compose.cohost.yml
+#   cohost + override:            docker-compose.yml:docker-compose.cohost.yml:docker-compose.override.yml
+# Setting COMPOSE_FILE disables auto-loading of override.yml, so cohost must
+# explicitly list it when one was generated.
+if $IS_COHOST; then
+    CF="docker-compose.yml:docker-compose.cohost.yml"
+    if $NEEDS_OVERRIDE; then
+        CF="${CF}:docker-compose.override.yml"
+    fi
+    set_env "COMPOSE_FILE" "$CF"
+    ok "COMPOSE_FILE = ${CF}"
+else
+    # Strip any lingering COMPOSE_FILE (e.g. from a prior cohost or pi config)
+    if grep -q "^COMPOSE_FILE=" .env 2>/dev/null; then
+        sed -i "/^COMPOSE_FILE=/d" .env
+        ok "Removed COMPOSE_FILE from .env (override.yml auto-loads)"
+    fi
 fi
 
 # ─────────────────────────────────────────────────────────────
@@ -631,7 +730,10 @@ docker compose ps
 
 HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "")
 
-if $ENABLE_SSL; then
+if $IS_COHOST; then
+    SCHEME="https"
+    UI_URL="(your public hostname via host-level proxy)"
+elif $ENABLE_SSL; then
     SCHEME="https"
     UI_URL="${SCHEME}://localhost"
 else
@@ -644,6 +746,11 @@ echo "  ╔═══════════════════════
 printf "  ║          \033[32mSetup complete!\033[0m                     ║\n"
 echo "  ╚══════════════════════════════════════════════╝"
 echo ""
+if $IS_COHOST; then
+echo "  Cohost mode active. The stack is running on 127.0.0.1 only."
+echo "  Point your host-level reverse proxy at http://127.0.0.1:4200"
+echo "  (see docs/cohosting.md for nginx and cloudflared examples)."
+else
 echo "  Open in your browser:"
 echo ""
 echo "    $UI_URL"
@@ -655,6 +762,7 @@ echo ""
 echo "    Your browser will show a certificate warning because the"
 echo "    cert is self-signed. Click 'Advanced' > 'Proceed' to continue."
 echo "    This is expected and safe on your own network."
+fi
 fi
 echo ""
 echo "  A setup wizard will guide you through creating"
@@ -670,8 +778,8 @@ $INCLUDE_TTS     && echo "  Coqui TTS:    http://localhost:5002"
 $INCLUDE_SIGNING && echo "  DocuSeal:     http://localhost:3000"
 echo ""
 
-# Server access instructions (headless only)
-if $IS_HEADLESS && [[ -n "${HOST_IP:-}" ]]; then
+# Server access instructions (headless standalone only — cohost uses the host proxy)
+if $IS_HEADLESS && ! $IS_COHOST && [[ -n "${HOST_IP:-}" ]]; then
     EXT_PORT=$($ENABLE_SSL && echo "443" || echo "80")
     echo "  ─── Public Access ───"
     echo ""

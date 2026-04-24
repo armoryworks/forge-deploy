@@ -7,7 +7,7 @@ services:
         BUILD_SHA: ${BUILD_SHA:-dev}
     container_name: qb-engineer-ui
     ports:
-      - "${UI_PORT:-4200}:80"
+      - "${UI_BIND:-127.0.0.1}:${UI_PORT:-4200}:80"
     depends_on:
       qb-engineer-api:
         condition: service_started
@@ -29,7 +29,7 @@ services:
       dockerfile: qb-engineer.api/Dockerfile
     container_name: qb-engineer-api
     ports:
-      - "${API_PORT:-5000}:8080"
+      - "${API_BIND:-127.0.0.1}:${API_PORT:-5000}:8080"
     environment:
       - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Development}
       - RECREATE_DB=${RECREATE_DB:-false}
@@ -97,7 +97,7 @@ services:
     image: pgvector/pgvector:pg17
     container_name: qb-engineer-db
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     environment:
       - POSTGRES_DB=${POSTGRES_DB:-qb_engineer}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
@@ -119,8 +119,8 @@ services:
     image: minio/minio
     container_name: qb-engineer-storage
     ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "${MINIO_BIND:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_BIND:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
     environment:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
@@ -139,7 +139,7 @@ services:
     image: ollama/ollama
     container_name: qb-engineer-ai
     ports:
-      - "${AI_PORT:-11434}:11434"
+      - "${AI_BIND:-127.0.0.1}:${AI_PORT:-11434}:11434"
     volumes:
       - ollamadata:/root/.ollama
     healthcheck:
@@ -175,7 +175,7 @@ services:
     image: ghcr.io/coqui-ai/tts-cpu:latest
     container_name: qb-engineer-tts
     ports:
-      - "${TTS_PORT:-5002}:5002"
+      - "${TTS_BIND:-127.0.0.1}:${TTS_PORT:-5002}:5002"
     volumes:
       - ttsdata:/root/.local/share/tts
     # tts-server serves HTTP on --port; tts (the CLI default entrypoint) exits immediately
@@ -211,7 +211,7 @@ services:
     image: docuseal/docuseal:latest
     container_name: qb-engineer-signing
     ports:
-      - "${DOCUSEAL_PORT:-3000}:3000"
+      - "${DOCUSEAL_BIND:-127.0.0.1}:${DOCUSEAL_PORT:-3000}:3000"
     volumes:
       - docusealdata:/data
     environment:

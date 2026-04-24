@@ -100,6 +100,19 @@ $IS_ARM     && ok "Architecture: ARM ($ARCH)"
 $IS_LOW_RAM && ok "Low-RAM mode: ${TOTAL_MEM_MB} MB"
 
 # ─────────────────────────────────────────────────────────────
+# Hosting mode (read-only — refresh.sh never re-detects)
+# ─────────────────────────────────────────────────────────────
+# setup.sh writes QBE_HOSTING_MODE to .env. Refresh always trusts that value so
+# a fresh clone + git pull can't accidentally flip modes on a prod box.
+HOSTING_MODE="standalone"
+if [[ -f .env ]] && grep -q "^QBE_HOSTING_MODE=" .env 2>/dev/null; then
+    HOSTING_MODE=$(grep "^QBE_HOSTING_MODE=" .env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | xargs)
+fi
+IS_COHOST=false
+[[ "$HOSTING_MODE" == "cohost" ]] && IS_COHOST=true
+ok "Hosting mode: ${HOSTING_MODE}"
+
+# ─────────────────────────────────────────────────────────────
 # Git pull main
 # ─────────────────────────────────────────────────────────────
 
@@ -177,12 +190,18 @@ fi
 # HTTPS-Only upgrade, cached HSTS, or just picks the wrong scheme still lands
 # on the maintenance page instead of "can't connect".
 #
-# When the real UI is on a standard port (80 or 443), we publish BOTH host
-# ports — the maintenance page covers http:// and https:// regardless of
-# which the user's browser tries. For dev ports (4200 etc.) we publish only
-# the one port (and also tack on :443 since HTTPS-Only can still bite).
+# Standalone: when the real UI is on a standard port (80 or 443), publish BOTH
+#   host ports — covers http:// and https:// regardless of what the browser
+#   tries. For dev ports (4200 etc.) we publish only the one port (and also
+#   tack on :443 since HTTPS-Only can still bite).
+# Cohost: the host-level proxy owns :80 and :443 — publishing them here would
+#   fail or silently steal traffic from the proxy. Bind to 127.0.0.1 on the
+#   configured UI port only. The host proxy will see maintenance upstream
+#   during the swap window exactly as it sees the real UI.
 declare -a MAINT_PORT_MAPS=()
-if [[ "$UI_HOST_PORT" == "80" || "$UI_HOST_PORT" == "443" ]]; then
+if $IS_COHOST; then
+    MAINT_PORT_MAPS+=("127.0.0.1:${UI_HOST_PORT}:80")
+elif [[ "$UI_HOST_PORT" == "80" || "$UI_HOST_PORT" == "443" ]]; then
     MAINT_PORT_MAPS+=("80:80" "443:443")
 else
     # Dev port: publish that port -> container :80, plus try to also grab :443.
@@ -233,8 +252,12 @@ build_run_args RUN_ARGS
 if ! docker run "${RUN_ARGS[@]}" &>/dev/null; then
     warn "Dual-port bind failed (likely :443 occupied) — retrying with primary port only"
     docker rm -f qb-maintenance 2>/dev/null || true
-    MAINT_PORT_MAPS=("${UI_HOST_PORT}:80")
-    [[ "$UI_HOST_PORT" == "443" ]] && MAINT_PORT_MAPS=("443:443")
+    if $IS_COHOST; then
+        MAINT_PORT_MAPS=("127.0.0.1:${UI_HOST_PORT}:80")
+    else
+        MAINT_PORT_MAPS=("${UI_HOST_PORT}:80")
+        [[ "$UI_HOST_PORT" == "443" ]] && MAINT_PORT_MAPS=("443:443")
+    fi
     build_run_args RUN_ARGS
     docker run "${RUN_ARGS[@]}" >/dev/null
 fi
@@ -384,9 +407,14 @@ fi
 HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "")
 
 echo ""
+if $IS_COHOST; then
+echo "  UI (internal):  $UI_URL  (served via host-level proxy)"
+echo "  Public URL:     whatever your reverse proxy is configured to serve"
+else
 echo "  UI:      $UI_URL"
 if [[ -n "${HOST_IP:-}" ]]; then
 echo "  Network: ${SCHEME}://${HOST_IP}"
+fi
 fi
 echo "  API:     http://localhost:5000"
 echo "  MinIO:   http://localhost:9001  (minioadmin / minioadmin)"

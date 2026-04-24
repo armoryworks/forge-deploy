@@ -25,7 +25,7 @@ services:
         BUILD_SHA: ${BUILD_SHA:-demo}
     container_name: qb-engineer-demo
     ports:
-      - "${DEMO_HOST_PORT:-4203}:80"
+      - "${DEMO_BIND:-127.0.0.1}:${DEMO_HOST_PORT:-4203}:80"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]

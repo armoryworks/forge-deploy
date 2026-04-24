@@ -8,12 +8,19 @@
 #
 # Angular changes reload instantly via ng serve (poll-based file watching).
 # .NET changes reload via dotnet watch (automatic rebuild on save).
+#
+# Port binding: this overlay re-exposes services on 0.0.0.0 (LAN-accessible)
+# for easy device testing. The base file binds 127.0.0.1 by default. If you
+# only need localhost access, you can omit this overlay or set *_BIND=127.0.0.1
+# per service in .env.
 
 services:
   qb-engineer-ui:
     build:
       context: ./qb-engineer-ui
       dockerfile: Dockerfile.dev
+    ports: !override
+      - "${UI_PORT:-4200}:80"
     volumes:
       - ./qb-engineer-ui:/app
       - ui_node_modules:/app/node_modules
@@ -26,6 +33,8 @@ services:
     build:
       context: ./qb-engineer-server
       dockerfile: qb-engineer.api/Dockerfile.dev
+    ports: !override
+      - "${API_PORT:-5000}:8080"
     volumes:
       - ./qb-engineer-server:/app
       - ./.git:/app/.git:ro
@@ -38,6 +47,15 @@ services:
       resources:
         limits:
           memory: 4G
+
+  qb-engineer-db:
+    ports: !override
+      - "${POSTGRES_PORT:-5432}:5432"
+
+  qb-engineer-storage:
+    ports: !override
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
 
 volumes:
   ui_node_modules:
