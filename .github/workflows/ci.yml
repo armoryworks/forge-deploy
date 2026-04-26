@@ -1,0 +1,55 @@
+# PR + push CI for qb-engineer-deploy
+#
+# This repo holds docker-compose, ops scripts, nginx configs.
+# Validation = lint the things we ship: yaml, shell, dockerfiles.
+# Heavy "does it actually start" tests are out of scope (need a real host).
+
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose files
+        run: |
+          set -e
+          for f in docker-compose*.yml; do
+            echo "Validating $f"
+            docker compose -f "$f" config --quiet
+          done
+
+      - name: Lint shell scripts (shellcheck)
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: '.'
+          severity: warning
+          ignore_paths: |
+            tools/rfid-relay
+
+      - name: Lint Dockerfiles (hadolint)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          recursive: true
+          ignore: DL3008,DL3015,DL3018      # apt/apk version pinning warnings — too noisy
+
+      - name: Lint YAML
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          config_data: |
+            extends: relaxed
+            rules:
+              line-length: disable
+              comments-indentation: disable

@@ -1,0 +1,47 @@
+# Release workflow for qb-engineer-deploy
+#
+# This repo doesn't ship a Docker image — it ships the compose files and
+# scripts you clone to install the platform. "Releasing" = creating a
+# GitHub release with a versioned tag, so users can pin to a specific
+# tested compose configuration.
+#
+# Triggers:
+#   - push of a v*.*.* tag -> create GitHub release with auto-generated notes
+
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write           # required to create the GitHub release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # for changelog generation
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            See the [release manifest in the umbrella repo](https://github.com/danielhokanson/qb-engineer/blob/main/release-manifest.md)
+            for the tested combination of qb-engineer-ui and qb-engineer-server image versions
+            this deploy release pairs with.
+
+            ## Install / upgrade
+
+            ```bash
+            git clone --branch ${{ github.ref_name }} https://github.com/danielhokanson/qb-engineer-deploy.git
+            cd qb-engineer-deploy
+            ./setup.sh        # first install
+            # or
+            ./refresh.sh      # upgrade existing install
+            ```

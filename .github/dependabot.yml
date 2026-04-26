@@ -1,0 +1,27 @@
+# Dependabot config for qb-engineer-deploy
+#
+# This repo doesn't have npm or nuget — just Docker base images and
+# GitHub Actions. Both are still worth tracking for security patches.
+
+version: 2
+updates:
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    target-branch: "develop"
+
+  - package-ecosystem: "docker"
+    directory: "/maintenance"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    target-branch: "develop"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    target-branch: "develop"
