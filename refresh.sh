@@ -13,6 +13,35 @@
 
 set -euo pipefail
 
+# ─────────────────────────────────────────────────────────────
+# Phase 7: Pi-side guard — qb-deploy supersedes refresh on prod
+# ─────────────────────────────────────────────────────────────
+# refresh.sh is the legacy git-pull-and-rebuild proxy. Phase 6 of the CICD
+# rollout retired it on the Pi: prod now pulls prebuilt GHCR images via
+# `qb-deploy` (with healthcheck-gated rollback).
+#
+# Sentinel: /etc/qb-engineer/deploy-state.json — created by
+# scripts/install-qb-deploy.sh on Pi-style hosts. On dev workstations the
+# file is absent and the guard is a no-op, so the local-build dev loop
+# continues to work unchanged.
+#
+# See docs/cicd-design.md (Phase 7) and docs/qb-deploy.md.
+if [[ -f /etc/qb-engineer/deploy-state.json ]]; then
+    cat <<'EOF' >&2
+ERROR: refresh.sh is the legacy git-pull-and-rebuild proxy, retired on the Pi side.
+       This host has qb-deploy installed (state file at /etc/qb-engineer/deploy-state.json).
+
+       Use qb-deploy instead:
+         qb-deploy --list           # see available builds in GHCR
+         qb-deploy <main-sha>       # deploy a specific build
+         qb-deploy --status         # current deployed SHA per service
+         qb-deploy --rollback       # revert to prior tag
+
+       refresh.sh remains the dev-side dev-loop tool (workstations doing local builds).
+EOF
+    exit 1
+fi
+
 INCLUDE_AI=false
 INCLUDE_SIGNING=false
 RECREATE_DB=false

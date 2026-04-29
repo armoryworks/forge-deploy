@@ -17,6 +17,33 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# --- Phase 7: Pi-side guard — qb-deploy supersedes refresh on prod ---
+#
+# refresh.ps1 is the legacy git-pull-and-rebuild proxy. Phase 6 of the CICD
+# rollout retired it on the Pi: prod now pulls prebuilt GHCR images via
+# qb-deploy (with healthcheck-gated rollback).
+#
+# Sentinel: /etc/qb-engineer/deploy-state.json — created by
+# scripts/install-qb-deploy.sh on Pi-style hosts. On Windows workstations
+# the path is absent and the guard is a no-op (Test-Path returns $false
+# for Linux-style paths), so the local-build dev loop continues to work.
+# PowerShell Core (pwsh) on the Pi would catch the sentinel and abort.
+#
+# See docs/cicd-design.md (Phase 7) and docs/qb-deploy.md.
+if (Test-Path -PathType Leaf '/etc/qb-engineer/deploy-state.json') {
+    Write-Host "ERROR: refresh.ps1 is the legacy git-pull-and-rebuild proxy, retired on the Pi side." -ForegroundColor Red
+    Write-Host "       This host has qb-deploy installed (state file at /etc/qb-engineer/deploy-state.json)."
+    Write-Host ""
+    Write-Host "       Use qb-deploy instead (in a bash shell):"
+    Write-Host "         qb-deploy --list           # see available builds in GHCR"
+    Write-Host "         qb-deploy <main-sha>       # deploy a specific build"
+    Write-Host "         qb-deploy --status         # current deployed SHA per service"
+    Write-Host "         qb-deploy --rollback       # revert to prior tag"
+    Write-Host ""
+    Write-Host "       refresh.ps1 remains the dev-side dev-loop tool (workstations doing local builds)."
+    exit 1
+}
+
 # --- Helpers ---
 
 function Write-Step([string]$msg) {

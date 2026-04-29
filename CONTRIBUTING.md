@@ -10,13 +10,23 @@ mind.
 
 ## What lives here
 
-- `docker-compose*.yml` — one base + variants (cohost, demo, dev, export)
-- `setup.sh` / `setup.ps1` — first-time install
-- `refresh.sh` / `refresh.ps1` — upgrade existing install
+- `docker-compose*.yml` — one base + variants (cohost, demo, dev, export, prod)
+- `setup.sh` / `setup.ps1` — **first-time bootstrap** (any host, runs once per install)
+- `refresh.sh` / `refresh.ps1` — **dev-side dev-loop only** (`git pull` + local rebuild). Aborts on Pi-style hosts where `qb-deploy` is installed.
+- `scripts/qb-deploy` — **prod CD CLI** (Pi only). Pulls prebuilt GHCR images, pins them in `.env`, runs `docker compose pull` + `up -d`, gates on healthcheck, rolls back on failure.
+- `scripts/install-qb-deploy.sh` — installs `qb-deploy` and creates `/etc/qb-engineer/deploy-state.json` (the sentinel that retires `refresh.*` on that host).
 - `setup-demo.sh` / `refresh-demo.sh` / `export-demo-data.*` — demo flows
 - `scripts/` — Ruby seed scripts for reference data
 - `maintenance/` — nginx maintenance-mode page (Dockerfile + assets)
 - `tools/rfid-relay/` — small Go utility for serial NFC readers
+
+### Three deploy surfaces, three roles (Phase 7)
+
+| Script | Where it runs | What it does |
+|---|---|---|
+| `setup.{sh,ps1}` | dev workstations + Pi (first-time only) | Generates `.env`, JWT keys, prompts for seed password, brings the stack up from scratch. Idempotent but really only needed once per host. |
+| `refresh.{sh,ps1}` | dev workstations only | `git pull` + `docker compose build` + `up -d`. **Refuses to run on the Pi** (detects `/etc/qb-engineer/deploy-state.json`). Prod no longer rebuilds locally. |
+| `qb-deploy` | Pi only | Operator-initiated deploys. Pulls prebuilt GHCR images. See `docs/qb-deploy.md`. |
 
 ## Testing locally
 
