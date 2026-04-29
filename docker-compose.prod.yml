@@ -34,14 +34,8 @@ services:
     labels:
       qb-engineer.deploy-mode: "prod"
 
-  # qb-engineer-test — the public-facing test/demo site image. The base
-  # docker-compose.yml does not yet define this service (added in a later
-  # phase along with the test-site repo's own release.yml). When the test
-  # image lands and the base compose gains a qb-engineer-test service,
-  # uncomment the block below to start pinning it to a GHCR tag.
-  #
-  # qb-engineer-test:
-  #   image: ghcr.io/danielhokanson/qb-engineer-test:${TEST_IMAGE_TAG:-latest}
-  #   build: !reset null
-  #   labels:
-  #     qb-engineer.deploy-mode: "prod"
+  qb-engineer-test:
+    image: ghcr.io/danielhokanson/qb-engineer-test:${TEST_IMAGE_TAG:-latest}
+    build: !reset null
+    labels:
+      qb-engineer.deploy-mode: "prod"

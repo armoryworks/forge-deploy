@@ -23,6 +23,33 @@ services:
           memory: 256M
     restart: unless-stopped
 
+  qb-engineer-test:
+    # Public-facing test/demo SPA (qb-engineer-test repo, test-bed/).
+    # Build context is the qb-engineer-test repo root (sibling of this
+    # deploy repo on the dev workstation) because the Angular build's
+    # content-compile step reads from <repo>/docs/. On the Pi this
+    # service is sourced via docker-compose.prod.yml (image: from GHCR);
+    # the build: block here is for local dev / CI build verification.
+    build:
+      context: ../qb-engineer-test
+      dockerfile: test-bed/Dockerfile
+    container_name: qb-engineer-test
+    ports:
+      - "${TEST_BIND:-127.0.0.1}:${TEST_PORT:-4300}:80"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    profiles:
+      - test
+    restart: unless-stopped
+
   qb-engineer-api:
     build:
       context: ./qb-engineer-server
