@@ -1,0 +1,666 @@
+#!/usr/bin/env bash
+# qb-deploy — Operator-driven deploy CLI for the qb-engineer Pi.
+#
+# Pulls images from ghcr.io/danielhokanson/qb-engineer-{server,ui,test},
+# pins the operative .env to the chosen tag, and runs the standard
+# docker compose flow with healthcheck-gated rollback.
+#
+# Source of truth: see e:/dev/qb-engineer/docs/cicd-design.md (Phases 3+4).
+#
+# Bash conventions:
+#   - set -euo pipefail
+#   - all variables quoted
+#   - [[ ]] over [ ]
+#   - trap-based cleanup
+#   - never deploys 'latest' (humans use floating tags, deployments use immutable)
+#
+# Public domain commands — see usage() below.
+
+set -euo pipefail
+
+# ─────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────
+
+readonly QB_DEPLOY_VERSION="0.1.0"
+readonly REPO_ROOT="${QB_DEPLOY_REPO:-/opt/qb-engineer-deploy}"
+readonly STATE_DIR="/etc/qb-engineer"
+readonly STATE_FILE="${STATE_DIR}/deploy-state.json"
+readonly LOG_FILE="/var/log/qb-engineer-deploy.log"
+readonly ENV_FILE="${REPO_ROOT}/.env"
+readonly COMPOSE_BASE="${REPO_ROOT}/docker-compose.yml"
+readonly COMPOSE_PROD="${REPO_ROOT}/docker-compose.prod.yml"
+readonly REGISTRY_HOST="ghcr.io"
+readonly REGISTRY_OWNER="danielhokanson"
+readonly HEALTHCHECK_TIMEOUT_SECS=60
+readonly HEALTHCHECK_POLL_INTERVAL=2
+
+# Service descriptors: service_id|compose_service|image_repo|env_var|healthcheck_kind
+# healthcheck_kind: docker (use container healthcheck) or http:<path> (curl from host)
+readonly SERVICES=(
+  "api|qb-engineer-api|qb-engineer-server|SERVER_IMAGE_TAG|http:/api/v1/health"
+  "ui|qb-engineer-ui|qb-engineer-ui|UI_IMAGE_TAG|docker"
+  "test|qb-engineer-test|qb-engineer-test|TEST_IMAGE_TAG|docker"
+)
+
+# Tag format regexes
+readonly TAG_RE_SHA='^main-[a-f0-9]{7}$'
+readonly TAG_RE_SEMVER='^[0-9]+\.[0-9]+\.[0-9]+$'
+
+# ─────────────────────────────────────────────────────────────
+# Color output (respects NO_COLOR)
+# ─────────────────────────────────────────────────────────────
+
+if [[ -n "${NO_COLOR:-}" ]] || [[ ! -t 1 ]]; then
+  C_RESET=""; C_DIM=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_CYAN=""; C_BOLD=""
+else
+  C_RESET=$'\033[0m'
+  C_DIM=$'\033[2m'
+  C_RED=$'\033[31m'
+  C_GREEN=$'\033[32m'
+  C_YELLOW=$'\033[33m'
+  C_CYAN=$'\033[36m'
+  C_BOLD=$'\033[1m'
+fi
+
+step() { printf '%s==> %s%s\n' "${C_CYAN}" "$1" "${C_RESET}"; }
+ok()   { printf '    %s[OK]%s %s\n' "${C_GREEN}" "${C_RESET}" "$1"; }
+warn() { printf '    %s[!!]%s %s\n' "${C_YELLOW}" "${C_RESET}" "$1"; }
+err()  { printf '    %s[XX]%s %s\n' "${C_RED}" "${C_RESET}" "$1" >&2; }
+die()  { err "$1"; exit "${2:-1}"; }
+
+# ─────────────────────────────────────────────────────────────
+# Usage
+# ─────────────────────────────────────────────────────────────
+
+usage() {
+  cat <<EOF
+qb-deploy ${QB_DEPLOY_VERSION} — qb-engineer deploy CLI
+
+USAGE:
+  qb-deploy                        Interactive: list last 5 main-<sha> builds, prompt
+  qb-deploy <tag>                  Deploy a specific tag to all services (or with --service)
+  qb-deploy --service <name>       Narrow to one service (api | ui | test | all)
+  qb-deploy --list                 List recent main-<sha> tags in GHCR
+  qb-deploy --list --releases      List <X.Y.Z> semver tags in GHCR
+  qb-deploy --status               Show currently deployed SHA and container health
+  qb-deploy --rollback             Re-pin to the previously deployed tag
+  qb-deploy --logs                 Tail the deploy history log
+  qb-deploy --self-update          git pull qb-engineer-deploy + reinstall
+  qb-deploy --help                 This usage
+
+EXAMPLES:
+  qb-deploy main-abc1234                       Deploy that SHA to all services
+  qb-deploy main-abc1234 --service api         Deploy that SHA only to api
+  qb-deploy --service ui                       Pick a tag interactively for ui only
+  qb-deploy 1.2.3                              Deploy a semver release to all
+
+NOTES:
+  * Refuses to deploy 'latest' — only immutable tags are accepted.
+  * State: ${STATE_FILE}
+  * Log:   ${LOG_FILE}
+  * Compose files: ${COMPOSE_BASE} + ${COMPOSE_PROD}
+EOF
+}
+
+# ─────────────────────────────────────────────────────────────
+# Service descriptor helpers
+# ─────────────────────────────────────────────────────────────
+
+service_field() {
+  # service_field <service_id> <field_index 1..5>
+  local id="$1" idx="$2" entry
+  for entry in "${SERVICES[@]}"; do
+    if [[ "${entry%%|*}" == "$id" ]]; then
+      IFS='|' read -r _f1 _f2 _f3 _f4 _f5 <<<"$entry"
+      case "$idx" in
+        1) printf '%s\n' "$_f1" ;;
+        2) printf '%s\n' "$_f2" ;;
+        3) printf '%s\n' "$_f3" ;;
+        4) printf '%s\n' "$_f4" ;;
+        5) printf '%s\n' "$_f5" ;;
+        *) return 1 ;;
+      esac
+      return 0
+    fi
+  done
+  return 1
+}
+
+service_compose() { service_field "$1" 2; }
+service_repo()    { service_field "$1" 3; }
+service_envvar()  { service_field "$1" 4; }
+service_health()  { service_field "$1" 5; }
+
+all_service_ids() {
+  local entry
+  for entry in "${SERVICES[@]}"; do
+    printf '%s\n' "${entry%%|*}"
+  done
+}
+
+# ─────────────────────────────────────────────────────────────
+# Pre-flight
+# ─────────────────────────────────────────────────────────────
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1 (run scripts/install-qb-deploy.sh)"
+}
+
+preflight() {
+  require_cmd docker
+  require_cmd curl
+  require_cmd jq
+  docker compose version >/dev/null 2>&1 || die "docker compose plugin missing"
+
+  if [[ ! -f "$COMPOSE_BASE" ]]; then
+    die "Base compose file not found: $COMPOSE_BASE (set QB_DEPLOY_REPO?)"
+  fi
+  if [[ ! -f "$COMPOSE_PROD" ]]; then
+    die "Prod compose overlay not found: $COMPOSE_PROD"
+  fi
+  if [[ ! -f "$ENV_FILE" ]]; then
+    die "Env file not found: $ENV_FILE (run setup.sh first)"
+  fi
+  if [[ ! -f "$STATE_FILE" ]]; then
+    die "State file not found: $STATE_FILE (run scripts/install-qb-deploy.sh)"
+  fi
+  if [[ ! -w "$STATE_FILE" ]]; then
+    die "State file not writable: $STATE_FILE"
+  fi
+  if [[ ! -w "$LOG_FILE" ]]; then
+    die "Log file not writable: $LOG_FILE"
+  fi
+}
+
+# ─────────────────────────────────────────────────────────────
+# Tag validation
+# ─────────────────────────────────────────────────────────────
+
+validate_tag() {
+  local tag="$1"
+  if [[ "$tag" == "latest" ]]; then
+    die "Refusing to deploy 'latest' — pass a main-<sha> or <X.Y.Z> tag (try: qb-deploy --list)"
+  fi
+  if [[ ! "$tag" =~ $TAG_RE_SHA ]] && [[ ! "$tag" =~ $TAG_RE_SEMVER ]]; then
+    die "Invalid tag format: '$tag' (expected main-<7-hex> or X.Y.Z)"
+  fi
+}
+
+# ─────────────────────────────────────────────────────────────
+# GHCR API
+# ─────────────────────────────────────────────────────────────
+
+# Anonymous bearer token for a public GHCR image (works without auth).
+ghcr_token() {
+  local repo="$1"
+  curl -fsSL "https://${REGISTRY_HOST}/token?service=${REGISTRY_HOST}&scope=repository:${REGISTRY_OWNER}/${repo}:pull" \
+    | jq -r '.token'
+}
+
+# List tags for a given image. Returns one tag per line. Empty if none.
+ghcr_list_tags() {
+  local repo="$1" token
+  token=$(ghcr_token "$repo") || return 1
+  [[ -n "$token" ]] || return 1
+  curl -fsSL \
+    -H "Authorization: Bearer $token" \
+    -H "Accept: application/vnd.oci.image.index.v1+json" \
+    "https://${REGISTRY_HOST}/v2/${REGISTRY_OWNER}/${repo}/tags/list" \
+    | jq -r '.tags[]?' \
+    || true
+}
+
+# HEAD a tag's manifest to verify existence. 0 = exists, 1 = missing.
+ghcr_tag_exists() {
+  local repo="$1" tag="$2" token http_code
+  token=$(ghcr_token "$repo") || return 1
+  [[ -n "$token" ]] || return 1
+  http_code=$(curl -s -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $token" \
+    -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+    -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+    -H "Accept: application/vnd.oci.image.index.v1+json" \
+    -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+    "https://${REGISTRY_HOST}/v2/${REGISTRY_OWNER}/${repo}/manifests/${tag}" \
+    -X HEAD)
+  [[ "$http_code" == "200" ]]
+}
+
+# ─────────────────────────────────────────────────────────────
+# State file management
+# ─────────────────────────────────────────────────────────────
+
+state_get() {
+  # state_get <repo>           -> JSON object for that image (or null)
+  # state_get <repo> <field>   -> string field
+  local repo="$1" field="${2:-}"
+  if [[ -z "$field" ]]; then
+    jq -r --arg r "$repo" '.[$r] // {} | tojson' "$STATE_FILE"
+  else
+    jq -r --arg r "$repo" --arg f "$field" '.[$r][$f] // ""' "$STATE_FILE"
+  fi
+}
+
+state_set() {
+  # state_set <repo> <new-current-tag>
+  # Updates: prior <- current, current <- new, deployedAt <- now
+  local repo="$1" new_tag="$2" now tmp prior_tag
+  now=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  prior_tag=$(state_get "$repo" current)
+  tmp=$(mktemp)
+  jq --arg r "$repo" --arg cur "$new_tag" --arg prior "$prior_tag" --arg ts "$now" \
+    '.[$r] = {current: $cur, prior: $prior, deployedAt: $ts}' \
+    "$STATE_FILE" > "$tmp"
+  mv "$tmp" "$STATE_FILE"
+  chmod 0640 "$STATE_FILE" 2>/dev/null || true
+}
+
+# ─────────────────────────────────────────────────────────────
+# .env helpers
+# ─────────────────────────────────────────────────────────────
+
+env_get() {
+  local key="$1"
+  if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
+    grep -E "^${key}=" "$ENV_FILE" | head -1 | cut -d= -f2-
+  fi
+}
+
+env_set() {
+  local key="$1" val="$2" tmp
+  tmp=$(mktemp)
+  if grep -qE "^${key}=" "$ENV_FILE"; then
+    # Preserve other lines verbatim; rewrite this one with awk to avoid sed escaping issues.
+    awk -v k="$key" -v v="$val" '
+      BEGIN { FS=OFS="=" }
+      $1==k { print k "=" v; next }
+      { print }
+    ' "$ENV_FILE" > "$tmp"
+  else
+    cp "$ENV_FILE" "$tmp"
+    printf '%s=%s\n' "$key" "$val" >> "$tmp"
+  fi
+  mv "$tmp" "$ENV_FILE"
+}
+
+# ─────────────────────────────────────────────────────────────
+# Logging
+# ─────────────────────────────────────────────────────────────
+
+log_event() {
+  # log_event <service> <from> <to> <outcome>
+  local svc="$1" from="$2" to="$3" outcome="$4" ts
+  ts=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  printf '%s %s %s -> %s %s\n' "$ts" "$svc" "${from:-<none>}" "$to" "$outcome" >> "$LOG_FILE"
+}
+
+# ─────────────────────────────────────────────────────────────
+# Compose helpers
+# ─────────────────────────────────────────────────────────────
+
+compose() {
+  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_BASE" -f "$COMPOSE_PROD" "$@"
+}
+
+# Wait for a service to become healthy. Returns 0 healthy, 1 unhealthy/timeout.
+wait_healthy() {
+  local svc_id="$1" compose_svc health
+  compose_svc=$(service_compose "$svc_id")
+  health=$(service_health "$svc_id")
+  local elapsed=0
+
+  while (( elapsed < HEALTHCHECK_TIMEOUT_SECS )); do
+    case "$health" in
+      docker)
+        # Use docker inspect on the container's Health.Status.
+        local cid status
+        cid=$(compose ps -q "$compose_svc" 2>/dev/null || true)
+        if [[ -n "$cid" ]]; then
+          status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null || echo unknown)
+          if [[ "$status" == "healthy" ]]; then return 0; fi
+          if [[ "$status" == "none" ]]; then
+            # No healthcheck defined — fall back to "running" check.
+            local running
+            running=$(docker inspect --format '{{.State.Running}}' "$cid" 2>/dev/null || echo false)
+            if [[ "$running" == "true" ]]; then
+              # Give a brief settle time then accept.
+              sleep 5
+              return 0
+            fi
+          fi
+        fi
+        ;;
+      http:*)
+        local path="${health#http:}"
+        # Hit the api healthcheck through the bound port (defaults from .env).
+        local api_port
+        api_port=$(env_get API_PORT || true)
+        api_port="${api_port:-5000}"
+        if curl -fsS --max-time 3 "http://127.0.0.1:${api_port}${path}" >/dev/null 2>&1; then
+          return 0
+        fi
+        ;;
+    esac
+    sleep "$HEALTHCHECK_POLL_INTERVAL"
+    elapsed=$(( elapsed + HEALTHCHECK_POLL_INTERVAL ))
+  done
+  return 1
+}
+
+# ─────────────────────────────────────────────────────────────
+# Commands
+# ─────────────────────────────────────────────────────────────
+
+cmd_list() {
+  local mode="${1:-builds}"  # builds | releases
+  local svc_id pattern
+  printf '\n%sAvailable tags%s (mode=%s)\n\n' "${C_BOLD}" "${C_RESET}" "$mode"
+  for svc_id in $(all_service_ids); do
+    local repo
+    repo=$(service_repo "$svc_id")
+    printf '%s%s%s (%s)\n' "${C_CYAN}" "$repo" "${C_RESET}" "$svc_id"
+    local tags
+    tags=$(ghcr_list_tags "$repo" 2>/dev/null || true)
+    if [[ -z "$tags" ]]; then
+      printf '  %s(no tags found or image not yet published)%s\n' "${C_DIM}" "${C_RESET}"
+      continue
+    fi
+    case "$mode" in
+      builds)   pattern='^main-[a-f0-9]+$' ;;
+      releases) pattern='^[0-9]+\.[0-9]+\.[0-9]+$' ;;
+      *)        pattern='.' ;;
+    esac
+    local matched
+    matched=$(printf '%s\n' "$tags" | grep -E "$pattern" | sort -r | head -10)
+    if [[ -z "$matched" ]]; then
+      printf '  %s(no tags matching %s)%s\n' "${C_DIM}" "$pattern" "${C_RESET}"
+    else
+      printf '%s\n' "$matched" | sed 's/^/  /'
+    fi
+  done
+  printf '\n'
+}
+
+cmd_status() {
+  printf '\n%sDeploy status%s\n\n' "${C_BOLD}" "${C_RESET}"
+  local svc_id
+  for svc_id in $(all_service_ids); do
+    local repo cur prior deployedAt compose_svc cid health_status
+    repo=$(service_repo "$svc_id")
+    compose_svc=$(service_compose "$svc_id")
+    cur=$(state_get "$repo" current)
+    prior=$(state_get "$repo" prior)
+    deployedAt=$(state_get "$repo" deployedAt)
+    cid=$(compose ps -q "$compose_svc" 2>/dev/null || true)
+    if [[ -n "$cid" ]]; then
+      health_status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{if .State.Running}}running{{else}}stopped{{end}}{{end}}' "$cid" 2>/dev/null || echo unknown)
+    else
+      health_status="not-running"
+    fi
+    printf '%s%s%s\n' "${C_CYAN}" "$svc_id" "${C_RESET}"
+    printf '  current:    %s\n' "${cur:-<none>}"
+    printf '  prior:      %s\n' "${prior:-<none>}"
+    printf '  deployedAt: %s\n' "${deployedAt:-<none>}"
+    printf '  container:  %s\n\n' "$health_status"
+  done
+}
+
+cmd_logs() {
+  if [[ ! -s "$LOG_FILE" ]]; then
+    warn "Log is empty: $LOG_FILE"
+    return 0
+  fi
+  tail -n 50 "$LOG_FILE"
+}
+
+cmd_self_update() {
+  step "Self-update: $REPO_ROOT"
+  if [[ ! -d "${REPO_ROOT}/.git" ]]; then
+    die "Not a git checkout: $REPO_ROOT"
+  fi
+  if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
+    die "Local changes present in $REPO_ROOT — refusing to pull"
+  fi
+  git -C "$REPO_ROOT" pull --ff-only
+  ok "Pulled latest"
+  if [[ -x "${REPO_ROOT}/scripts/install-qb-deploy.sh" ]]; then
+    "${REPO_ROOT}/scripts/install-qb-deploy.sh"
+  else
+    warn "install-qb-deploy.sh not found or not executable"
+  fi
+}
+
+# Interactive tag picker for one image. Echoes the chosen tag.
+pick_tag_interactive() {
+  local svc_id="$1"
+  local repo
+  repo=$(service_repo "$svc_id")
+  local tags
+  tags=$(ghcr_list_tags "$repo" 2>/dev/null | grep -E '^main-[a-f0-9]+$' | sort -r | head -5 || true)
+  if [[ -z "$tags" ]]; then
+    die "No main-<sha> tags available for $repo"
+  fi
+  printf '\nRecent builds for %s:\n' "$repo" >&2
+  local i=1
+  local tag_array=()
+  while IFS= read -r t; do
+    [[ -z "$t" ]] && continue
+    tag_array+=("$t")
+    printf '  [%d] %s\n' "$i" "$t" >&2
+    i=$(( i + 1 ))
+  done <<<"$tags"
+  printf '\nChoose [1-%d] (or Enter for 1, q to cancel): ' "${#tag_array[@]}" >&2
+  local choice
+  read -r choice
+  if [[ "$choice" == "q" || "$choice" == "Q" ]]; then
+    die "Cancelled by user"
+  fi
+  choice="${choice:-1}"
+  if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#tag_array[@]} )); then
+    die "Invalid choice: $choice"
+  fi
+  printf '%s\n' "${tag_array[$(( choice - 1 ))]}"
+}
+
+# Deploy a single service to a single tag.
+deploy_service() {
+  local svc_id="$1" target_tag="$2"
+  local repo envvar compose_svc prior_tag
+  repo=$(service_repo "$svc_id")
+  envvar=$(service_envvar "$svc_id")
+  compose_svc=$(service_compose "$svc_id")
+  prior_tag=$(env_get "$envvar")
+
+  step "Deploying $svc_id -> $target_tag"
+
+  if ! ghcr_tag_exists "$repo" "$target_tag"; then
+    err "Tag not found in GHCR: ${REGISTRY_OWNER}/${repo}:${target_tag}"
+    log_event "$svc_id" "$prior_tag" "$target_tag" "missing-in-ghcr"
+    return 1
+  fi
+  ok "Tag verified in GHCR"
+
+  env_set "$envvar" "$target_tag"
+  ok ".env updated: ${envvar}=${target_tag}"
+
+  if ! compose pull "$compose_svc"; then
+    err "docker compose pull failed"
+    env_set "$envvar" "$prior_tag"
+    log_event "$svc_id" "$prior_tag" "$target_tag" "pull-failed"
+    return 1
+  fi
+  ok "Image pulled"
+
+  if ! compose up -d "$compose_svc"; then
+    err "docker compose up -d failed"
+    env_set "$envvar" "$prior_tag"
+    compose up -d "$compose_svc" || true
+    log_event "$svc_id" "$prior_tag" "$target_tag" "up-failed"
+    return 1
+  fi
+  ok "Container started"
+
+  step "Waiting for healthy ($HEALTHCHECK_TIMEOUT_SECS s max)"
+  if wait_healthy "$svc_id"; then
+    ok "Service healthy"
+    state_set "$repo" "$target_tag"
+    log_event "$svc_id" "$prior_tag" "$target_tag" "ok"
+    return 0
+  fi
+
+  err "Service did not become healthy — rolling back to $prior_tag"
+  if [[ -n "$prior_tag" && "$prior_tag" != "$target_tag" ]]; then
+    env_set "$envvar" "$prior_tag"
+    compose up -d "$compose_svc" || true
+  fi
+  log_event "$svc_id" "$prior_tag" "$target_tag" "unhealthy-rolled-back"
+  return 1
+}
+
+cmd_deploy() {
+  local target_services=("$@")  # space-separated svc_ids
+  local explicit_tag="${EXPLICIT_TAG:-}"
+
+  local svc_id
+  local failed=0
+  for svc_id in "${target_services[@]}"; do
+    local tag
+    if [[ -n "$explicit_tag" ]]; then
+      tag="$explicit_tag"
+    else
+      tag=$(pick_tag_interactive "$svc_id")
+    fi
+    validate_tag "$tag"
+    if ! deploy_service "$svc_id" "$tag"; then
+      failed=1
+    fi
+  done
+
+  if (( failed )); then
+    err "One or more services failed to deploy — check $LOG_FILE"
+    exit 1
+  fi
+  ok "All targeted services deployed successfully"
+}
+
+cmd_rollback() {
+  local svc_id="${1:-all}"
+  local target_services
+  if [[ "$svc_id" == "all" ]]; then
+    mapfile -t target_services < <(all_service_ids)
+  else
+    if ! service_repo "$svc_id" >/dev/null 2>&1; then
+      die "Unknown service: $svc_id"
+    fi
+    target_services=("$svc_id")
+  fi
+  local failed=0
+  for svc_id in "${target_services[@]}"; do
+    local repo prior
+    repo=$(service_repo "$svc_id")
+    prior=$(state_get "$repo" prior)
+    if [[ -z "$prior" ]]; then
+      warn "No prior tag recorded for $svc_id — skipping"
+      continue
+    fi
+    step "Rollback $svc_id -> $prior"
+    if ! deploy_service "$svc_id" "$prior"; then
+      failed=1
+    fi
+  done
+  if (( failed )); then exit 1; fi
+}
+
+# ─────────────────────────────────────────────────────────────
+# Argument parsing
+# ─────────────────────────────────────────────────────────────
+
+parse_service_arg() {
+  # Echoes one or more svc_ids
+  local arg="$1"
+  case "$arg" in
+    all)              all_service_ids ;;
+    api|ui|test)      printf '%s\n' "$arg" ;;
+    *)                die "Unknown --service value: $arg (api|ui|test|all)" ;;
+  esac
+}
+
+main() {
+  if [[ $# -eq 0 ]]; then
+    # Interactive: deploy all services, picking tags.
+    preflight
+    local services
+    mapfile -t services < <(all_service_ids)
+    EXPLICIT_TAG=""
+    cmd_deploy "${services[@]}"
+    return
+  fi
+
+  local mode="" service_arg="" positional=""
+  local list_releases=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --help|-h)         usage; exit 0 ;;
+      --version|-V)      printf 'qb-deploy %s\n' "$QB_DEPLOY_VERSION"; exit 0 ;;
+      --list)            mode="list"; shift ;;
+      --releases)        list_releases=true; shift ;;
+      --status)          mode="status"; shift ;;
+      --rollback)        mode="rollback"; shift ;;
+      --logs)            mode="logs"; shift ;;
+      --self-update)     mode="self-update"; shift ;;
+      --service)
+        [[ $# -ge 2 ]] || die "--service requires a value (api|ui|test|all)"
+        service_arg="$2"; shift 2 ;;
+      --service=*)       service_arg="${1#*=}"; shift ;;
+      -*)                die "Unknown option: $1 (try --help)" ;;
+      *)
+        if [[ -n "$positional" ]]; then
+          die "Unexpected extra argument: $1"
+        fi
+        positional="$1"; shift ;;
+    esac
+  done
+
+  case "$mode" in
+    list)
+      preflight
+      if $list_releases; then cmd_list releases; else cmd_list builds; fi
+      ;;
+    status)
+      preflight
+      cmd_status
+      ;;
+    rollback)
+      preflight
+      if [[ -n "$service_arg" ]]; then
+        cmd_rollback "$service_arg"
+      else
+        cmd_rollback all
+      fi
+      ;;
+    logs)
+      cmd_logs
+      ;;
+    self-update)
+      cmd_self_update
+      ;;
+    "")
+      # No mode flag — deploy.
+      preflight
+      local services
+      if [[ -n "$service_arg" ]]; then
+        mapfile -t services < <(parse_service_arg "$service_arg")
+      else
+        mapfile -t services < <(all_service_ids)
+      fi
+      EXPLICIT_TAG="$positional"
+      cmd_deploy "${services[@]}"
+      ;;
+    *)
+      die "Internal error: unhandled mode '$mode'"
+      ;;
+  esac
+}
+
+main "$@"
