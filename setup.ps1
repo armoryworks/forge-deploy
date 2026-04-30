@@ -20,7 +20,14 @@ param(
     [switch]$IncludeAi,
     [switch]$IncludeTts,
     [switch]$IncludeSigning,
-    [switch]$IncludeAll
+    [switch]$IncludeAll,
+    [switch]$Standalone,
+    [switch]$Cohost,
+    [switch]$Ssl,
+    [switch]$NoSsl,
+    [switch]$Public,
+    [switch]$NoPublicPreflight,
+    [string]$Hostname = ""
 )
 
 Set-StrictMode -Version Latest
@@ -30,6 +37,22 @@ if ($IncludeAll) {
     $IncludeAi = $true
     $IncludeTts = $true
     $IncludeSigning = $true
+}
+
+# -Public implies -Standalone -Ssl. Incompatible with -Cohost / -NoSsl.
+if ($Public) {
+    if ($Cohost) {
+        Write-Host "Error: -Public is incompatible with -Cohost." -ForegroundColor Red
+        Write-Host "       -Public means 'this stack owns the host's 80/443'; -Cohost means" -ForegroundColor Red
+        Write-Host "       'a host-level reverse proxy owns 80/443'. Pick one." -ForegroundColor Red
+        exit 1
+    }
+    if ($NoSsl) {
+        Write-Host "Error: -Public implies -Ssl, but -NoSsl was also passed." -ForegroundColor Red
+        exit 1
+    }
+    $Standalone = $true
+    $Ssl = $true
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -255,6 +278,9 @@ try {
 
 # --- Port availability check ---
 
+# In standalone/public mode the UI binds 0.0.0.0:80 (and :443 with SSL),
+# so we add those to the conflict check. Cohost mode keeps everything on
+# 127.0.0.1 so the base 4200/5000/etc. set is sufficient.
 $portsToCheck = @(
     @{ Port = 4200;  Name = "UI" },
     @{ Port = 5000;  Name = "API" },
@@ -263,6 +289,11 @@ $portsToCheck = @(
     @{ Port = 9001;  Name = "MinIO Console" }
 )
 
+if ((-not $Cohost) -and ($Standalone -or $Public -or $Ssl)) {
+    $portsToCheck += @{ Port = 80;  Name = "HTTP (standalone)" }
+    $portsToCheck += @{ Port = 443; Name = "HTTPS (standalone)" }
+}
+
 $portConflicts = @()
 foreach ($p in $portsToCheck) {
     try {
@@ -270,7 +301,16 @@ foreach ($p in $portsToCheck) {
         $listener.Start()
         $listener.Stop()
     } catch {
-        $portConflicts += "$($p.Name) (port $($p.Port))"
+        # Best-effort owner identification on Windows via Get-NetTCPConnection.
+        $owner = ""
+        try {
+            $conn = Get-NetTCPConnection -LocalPort $p.Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($conn) {
+                $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+                if ($proc) { $owner = " -- held by $($proc.ProcessName) (PID $($proc.Id))" }
+            }
+        } catch { }
+        $portConflicts += "$($p.Name) (port $($p.Port))$owner"
     }
 }
 
@@ -287,7 +327,21 @@ if ($portConflicts.Count -gt 0) {
         exit 1
     }
 } else {
-    Write-Ok "All required ports are available (4200, 5000, 5432, 9000, 9001)"
+    $portList = ($portsToCheck | ForEach-Object { $_.Port }) -join ", "
+    Write-Ok "All required ports are available ($portList)"
+}
+
+if ($Public) {
+    Write-Step "Public-deploy preflight"
+    Write-Warn "Windows host: -Public is mainly diagnostic here."
+    Write-Warn "Linux-only auto-handling (system nginx/apache, UFW) doesn't apply."
+    Write-Warn "If anything is holding 80/443 above, free it manually before continuing."
+    if ($NoPublicPreflight) {
+        Write-Warn "-NoPublicPreflight: skipping any further checks."
+    }
+    if ($Hostname) {
+        Write-Ok "Cert hostname (from -Hostname): $Hostname"
+    }
 }
 
 Write-Host ""

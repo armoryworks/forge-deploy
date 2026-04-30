@@ -80,6 +80,49 @@ cp .env.example .env
 ./setup.sh --source         # build from local sources
 ```
 
+### Public deploy (single-host network-reachable HTTPS)
+
+For a tester or single-host install that wants the stack reachable from
+the network on 80/443 with HTTPS, `--public` is the one-command macro:
+
+```bash
+./setup.sh --source --public
+# or, for the GHCR-pull path:
+./setup.sh --public
+```
+
+`--public` implies `--standalone --ssl` and runs a system-side preflight
+that handles the most common Ubuntu/Debian gotchas. With explicit
+consent at each step it will:
+
+- Detect what (if anything) is listening on 80/443 and offer to stop +
+  disable system `nginx` / `apache2` (`sudo systemctl stop … && disable …`).
+  Anything else holding the port aborts with a clear message.
+- Open UFW rules `80/tcp` and `443/tcp` if UFW is active.
+- Pick the hostname for the self-signed cert. Use `--hostname <fqdn>`
+  to skip the prompt; otherwise it offers `hostname -f` and accepts a
+  custom value.
+
+Every system change is logged into a `setup-public-rollback.sh` script
+in the cwd. Run that script later to revert (re-enable nginx, close
+UFW rules). The rollback script is only generated if at least one
+preflight action actually ran.
+
+`--public` is incompatible with `--cohost` (those modes have opposite
+intents about who owns the host's 80/443) and with `--no-ssl`.
+
+If you need the standalone+SSL behaviour but already have nginx/UFW
+handled (or use a different firewall), pass `--no-public-preflight`:
+
+```bash
+./setup.sh --public --no-public-preflight
+```
+
+That still configures standalone+SSL but skips the system-side checks
+and rollback-script generation. Other firewall systems (firewalld,
+iptables, cloud security groups) are not auto-handled — verify them
+manually.
+
 ## CI
 
 The CI workflow validates compose files (`docker compose config`),
