@@ -1,15 +1,34 @@
 #!/usr/bin/env bash
 # setup.sh — First-time setup for QB Engineer (Linux / macOS)
 #
-# Bash equivalent of setup.ps1 for users who prefer a native shell.
-# Auto-detects platform, architecture, and available resources.
-# Applies memory tuning on low-RAM systems, offers SSL on headless/server installs.
+# Two paths:
+#
+#   ./setup.sh                 # default: GHCR-pull. Pulls prebuilt images
+#                              # from ghcr.io/danielhokanson/qb-engineer-{server,ui,test}
+#                              # and brings the stack up. Requires only this
+#                              # repo (qb-engineer-deploy) cloned. This is
+#                              # the production / tester path.
+#
+#   ./setup.sh --source        # developer mode. Builds images locally from
+#                              # source. Requires qb-engineer-server,
+#                              # qb-engineer-ui, qb-engineer-test cloned as
+#                              # siblings of qb-engineer-deploy.
+#
+# Auto-detects platform, architecture, and available resources. Applies
+# memory tuning on low-RAM systems, offers SSL on headless/server installs.
+#
+# Multi-arch GHCR images (linux/amd64 + linux/arm64) are published from
+# the source repos, so both x86_64 and arm64 hosts can pull and run.
 #
 # Run from the repo root after cloning:
 #   chmod +x setup.sh
-#   ./setup.sh
+#   ./setup.sh           # GHCR-pull (production / tester)
+#   ./setup.sh --source  # local source build (developer)
 #
 # Options:
+#   --source             Build images locally from source. Requires sibling
+#                        qb-engineer-server / qb-engineer-ui / qb-engineer-test
+#                        repos. Default is GHCR-pull (no source needed).
 #   --seeded             Seed demo data (users, jobs, customers, etc.)
 #   --fresh              Wipe existing database and start over
 #   --fresh --seeded     Wipe database and reseed with demo data
@@ -23,9 +42,11 @@
 #                        (nginx, Caddy, cloudflared). Skip in-container TLS,
 #                        keep UI on 127.0.0.1:4200.
 #   --standalone         Own the full host (nginx + TLS inside the stack).
+#   -h / --help          Show this help.
 
 set -euo pipefail
 
+SOURCE_BUILD=false
 SEED_DEMO=false
 FRESH=false
 INCLUDE_AI=false
@@ -34,8 +55,13 @@ INCLUDE_SIGNING=false
 SSL_FLAG=""   # "" = auto-detect, "force" = --ssl, "skip" = --no-ssl
 MODE_FLAG=""  # "" = auto/use .env, "cohost" or "standalone" force
 
+show_help() {
+    sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
+}
+
 for arg in "$@"; do
     case $arg in
+        --source)          SOURCE_BUILD=true ;;
         --seeded)          SEED_DEMO=true ;;
         --fresh)           FRESH=true ;;
         --include-ai)      INCLUDE_AI=true ;;
@@ -46,7 +72,8 @@ for arg in "$@"; do
         --no-ssl)          SSL_FLAG="skip" ;;
         --cohost)          MODE_FLAG="cohost" ;;
         --standalone)      MODE_FLAG="standalone" ;;
-        *) echo "Unknown option: $arg"; exit 1 ;;
+        -h|--help)         show_help; exit 0 ;;
+        *) echo "Unknown option: $arg"; echo "Run './setup.sh --help' for usage."; exit 1 ;;
     esac
 done
 
@@ -184,6 +211,15 @@ echo ""
 echo "  ╔══════════════════════════════════════════════╗"
 echo "  ║        QB Engineer — First-Time Setup        ║"
 echo "  ╚══════════════════════════════════════════════╝"
+echo ""
+if $SOURCE_BUILD; then
+    echo "  Mode: SOURCE BUILD (developer)"
+    echo "        Builds images locally from sibling repos."
+else
+    echo "  Mode: GHCR-PULL (production / tester) [default]"
+    echo "        Pulls prebuilt images from ghcr.io. No source code needed."
+    echo "        Pass --source to build locally instead."
+fi
 echo ""
 
 # ─────────────────────────────────────────────────────────────
@@ -370,19 +406,81 @@ step "Verifying project files"
 
 if [[ ! -f "docker-compose.yml" ]]; then
     fail "docker-compose.yml not found."
-    info "Run this script from the repo root:"
-    info "  cd qb-engineer-wrapper && ./setup.sh"
+    info "Run this script from the qb-engineer-deploy repo root:"
+    info "  cd qb-engineer-deploy && ./setup.sh"
     exit 1
 fi
 
 if [[ ! -f ".env.example" ]]; then
     fail ".env.example not found — the repo may be incomplete."
     info "Try a fresh clone:"
-    info "  git clone https://github.com/danielhokanson/qb-engineer-wrapper.git"
+    info "  git clone https://github.com/danielhokanson/qb-engineer-deploy.git"
     exit 1
 fi
 
 ok "Project files found"
+
+# ─────────────────────────────────────────────────────────────
+# 3b. Source-build mode: verify sibling repos
+# ─────────────────────────────────────────────────────────────
+# In --source mode the docker-compose.yml `build:` blocks reference
+# ../qb-engineer-{server,ui,test}. The deploy repo must be cloned
+# alongside its sibling source repos. In GHCR-pull mode (default) the
+# prod overlay swaps build for image: and these directories are not
+# touched.
+if $SOURCE_BUILD; then
+    step "Verifying sibling source repos (--source mode)"
+
+    PARENT_DIR=$(cd .. && pwd)
+    REQUIRED_SIBLINGS=(qb-engineer-server qb-engineer-ui qb-engineer-test)
+    MISSING_SIBLINGS=()
+
+    for sib in "${REQUIRED_SIBLINGS[@]}"; do
+        if [[ -d "../${sib}" && -d "../${sib}/.git" ]]; then
+            ok "Found ../${sib}"
+        else
+            MISSING_SIBLINGS+=("$sib")
+        fi
+    done
+
+    if (( ${#MISSING_SIBLINGS[@]} > 0 )); then
+        echo ""
+        fail "Missing sibling source repos for --source build:"
+        for sib in "${MISSING_SIBLINGS[@]}"; do
+            info "  ${PARENT_DIR}/${sib}  (not found)"
+        done
+        echo ""
+        info "Source-build mode requires all four repos checked out as siblings"
+        info "under a master folder. Two ways to fix:"
+        echo ""
+        info "Option A — let setup.sh clone them now:"
+        echo ""
+        read -rp "    Clone the missing sibling repos into ${PARENT_DIR}? (y/N) " yn
+        if [[ "$yn" =~ ^[Yy]$ ]]; then
+            for sib in "${MISSING_SIBLINGS[@]}"; do
+                step "  Cloning ${sib}"
+                if ! git -C "$PARENT_DIR" clone "https://github.com/danielhokanson/${sib}.git"; then
+                    fail "git clone failed for ${sib}"
+                    info "Clone manually then re-run ./setup.sh --source"
+                    exit 1
+                fi
+                ok "Cloned ${sib}"
+            done
+        else
+            echo ""
+            info "Option B — clone them yourself, then re-run:"
+            for sib in "${MISSING_SIBLINGS[@]}"; do
+                info "  git -C ${PARENT_DIR} clone https://github.com/danielhokanson/${sib}.git"
+            done
+            echo ""
+            info "Or skip --source and use the default GHCR-pull path:"
+            info "  ./setup.sh"
+            exit 1
+        fi
+    fi
+
+    ok "All sibling repos present"
+fi
 
 # ─────────────────────────────────────────────────────────────
 # 4. Create .env
@@ -528,12 +626,19 @@ BUILD_VERSION=$(git rev-list --count HEAD 2>/dev/null || echo "0")
 BUILD_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "dev")
 export BUILD_VERSION BUILD_SHA
 
-VERSION_DIR="qb-engineer-ui/public/assets"
-if [[ -d "$VERSION_DIR" ]]; then
-    echo -n "{\"version\":\"${BUILD_VERSION}\",\"sha\":\"${BUILD_SHA}\"}" > "${VERSION_DIR}/version.json"
-    ok "Build ${BUILD_VERSION} (${BUILD_SHA})"
+# version.json injection only matters for source-build mode. With sibling
+# context paths the UI assets dir lives at ../qb-engineer-ui/public/assets.
+# In GHCR-pull mode the image already has version metadata baked in.
+if $SOURCE_BUILD; then
+    VERSION_DIR="../qb-engineer-ui/public/assets"
+    if [[ -d "$VERSION_DIR" ]]; then
+        echo -n "{\"version\":\"${BUILD_VERSION}\",\"sha\":\"${BUILD_SHA}\"}" > "${VERSION_DIR}/version.json"
+        ok "Build ${BUILD_VERSION} (${BUILD_SHA})"
+    else
+        warn "UI assets directory not found — skipping version.json"
+    fi
 else
-    warn "UI assets directory not found — skipping version.json"
+    info "GHCR-pull mode: version metadata baked into the image (skip)"
 fi
 
 # ─────────────────────────────────────────────────────────────
@@ -630,51 +735,82 @@ fi
 # ─────────────────────────────────────────────────────────────
 # 6b. Manage COMPOSE_FILE based on resolved overlays
 # ─────────────────────────────────────────────────────────────
-# Rules:
-#   standalone + no override:     unset COMPOSE_FILE (auto-load override.yml)
-#   standalone + override:        unset COMPOSE_FILE (auto-load override.yml)
-#   cohost + no override:         docker-compose.yml:docker-compose.cohost.yml
-#   cohost + override:            docker-compose.yml:docker-compose.cohost.yml:docker-compose.override.yml
-# Setting COMPOSE_FILE disables auto-loading of override.yml, so cohost must
-# explicitly list it when one was generated.
+# Order matters: later files override earlier ones in docker compose.
+#
+#   GHCR-pull (default)     -> base + prod (prod swaps build: for image:)
+#   GHCR-pull + cohost      -> base + cohost + prod
+#   --source                -> base alone (auto-loads override.yml if present)
+#   --source + cohost       -> base + cohost (+ override.yml explicitly)
+#
+# Setting COMPOSE_FILE disables auto-loading of override.yml, so any branch
+# that sets COMPOSE_FILE must explicitly list override.yml when one exists.
+CF_PARTS=("docker-compose.yml")
 if $IS_COHOST; then
-    CF="docker-compose.yml:docker-compose.cohost.yml"
-    if $NEEDS_OVERRIDE; then
-        CF="${CF}:docker-compose.override.yml"
-    fi
-    set_env "COMPOSE_FILE" "$CF"
-    ok "COMPOSE_FILE = ${CF}"
-else
-    # Strip any lingering COMPOSE_FILE (e.g. from a prior cohost or pi config)
+    CF_PARTS+=("docker-compose.cohost.yml")
+fi
+if ! $SOURCE_BUILD; then
+    CF_PARTS+=("docker-compose.prod.yml")
+fi
+if $NEEDS_OVERRIDE; then
+    CF_PARTS+=("docker-compose.override.yml")
+fi
+
+# In the simplest case (--source + standalone + no override) leave
+# COMPOSE_FILE unset so docker compose auto-loads override.yml, matching
+# pre-existing dev behavior.
+if $SOURCE_BUILD && ! $IS_COHOST && ! $NEEDS_OVERRIDE; then
     if grep -q "^COMPOSE_FILE=" .env 2>/dev/null; then
         sed -i "/^COMPOSE_FILE=/d" .env
         ok "Removed COMPOSE_FILE from .env (override.yml auto-loads)"
     fi
+else
+    CF=$(IFS=:; echo "${CF_PARTS[*]}")
+    set_env "COMPOSE_FILE" "$CF"
+    ok "COMPOSE_FILE = ${CF}"
 fi
 
 # ─────────────────────────────────────────────────────────────
 # 7. Build and start
 # ─────────────────────────────────────────────────────────────
 
-step "Building Docker images"
-if $IS_ARM; then
-    warn "First build on ARM can take 10-20 minutes — go grab a coffee"
+if $SOURCE_BUILD; then
+    step "Building Docker images (--source mode)"
+    if $IS_ARM; then
+        warn "First build on ARM can take 10-20 minutes — go grab a coffee"
+    else
+        info "This may take several minutes on first run"
+    fi
+    echo ""
+
+    echo "    Building API image..."
+    docker compose build qb-engineer-api
+    ok "API image built"
+
+    echo "    Building UI image..."
+    docker compose build qb-engineer-ui
+    ok "UI image built"
 else
-    info "This may take several minutes on first run"
+    step "Pulling prebuilt images from GHCR"
+    info "Multi-arch images: linux/amd64 + linux/arm64. Docker auto-selects."
+    echo ""
+    if ! docker compose pull qb-engineer-api qb-engineer-ui; then
+        fail "Failed to pull GHCR images"
+        info "Common causes:"
+        info "  - No network connectivity to ghcr.io"
+        info "  - Image tag doesn't exist (check SERVER_IMAGE_TAG / UI_IMAGE_TAG in .env)"
+        info "  - Multi-arch image missing your architecture (try ./setup.sh --source)"
+        exit 1
+    fi
+    ok "Images pulled from GHCR"
 fi
-echo ""
 
-echo "    Building API image..."
-docker compose build qb-engineer-api
-ok "API image built"
-
-echo "    Building UI image..."
-docker compose build qb-engineer-ui
-ok "UI image built"
-
-step "Configuring git hooks"
-git config core.hooksPath .githooks
-ok "Pre-commit hook enabled (runs tests before commit)"
+# Git hooks only matter inside a git checkout that has them — skip if absent
+# (e.g. tarball install of the deploy repo).
+if [[ -d .githooks ]]; then
+    step "Configuring git hooks"
+    git config core.hooksPath .githooks
+    ok "Pre-commit hook enabled (runs tests before commit)"
+fi
 
 step "Starting core services (db, storage, backup, api, ui)"
 
@@ -828,7 +964,13 @@ echo ""
 echo "  View logs:    docker compose logs -f qb-engineer-api"
 echo "  Stop all:     docker compose stop"
 echo "  Start all:    docker compose up -d"
-echo "  Update:       ./refresh.sh"
+if $SOURCE_BUILD; then
+echo "  Update:       ./refresh.sh        (rebuild from source — dev loop)"
+else
+echo "  Update:       docker compose pull && docker compose up -d"
+echo "                or install qb-deploy for healthcheck-gated rollouts"
+echo "                  (see scripts/install-qb-deploy.sh)"
+fi
 echo "  DB shell:     docker compose exec qb-engineer-db psql -U postgres -d qb_engineer"
 echo ""
 

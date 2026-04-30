@@ -1,7 +1,12 @@
 services:
   qb-engineer-ui:
+    # Build context is the qb-engineer-ui repo root (sibling of this deploy
+    # repo on the dev workstation). On the Pi / GHCR-pull path this service
+    # is sourced via docker-compose.prod.yml (image: from GHCR); the build:
+    # block here is for local dev (`./setup.sh --source`) and CI build
+    # verification.
     build:
-      context: ./qb-engineer-ui
+      context: ../qb-engineer-ui
       args:
         BUILD_VERSION: ${BUILD_VERSION:-0}
         BUILD_SHA: ${BUILD_SHA:-dev}
@@ -51,8 +56,13 @@ services:
     restart: unless-stopped
 
   qb-engineer-api:
+    # Build context is the qb-engineer-server repo root (sibling of this
+    # deploy repo on the dev workstation). On the Pi / GHCR-pull path this
+    # service is sourced via docker-compose.prod.yml (image: from GHCR); the
+    # build: block here is for local dev (`./setup.sh --source`) and CI
+    # build verification.
     build:
-      context: ./qb-engineer-server
+      context: ../qb-engineer-server
       dockerfile: qb-engineer.api/Dockerfile
     container_name: qb-engineer-api
     ports:
