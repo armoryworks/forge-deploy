@@ -26,9 +26,19 @@ jobs:
       - name: Validate docker-compose files
         run: |
           set -e
-          for f in docker-compose*.yml; do
-            echo "Validating $f"
+          # Standalone projects — validate alone.
+          # docker-compose.yml is the base prod-style stack; docker-compose.demo.yml
+          # is the static-only demo project (own services, not an overlay).
+          for f in docker-compose.yml docker-compose.demo.yml; do
+            echo "Validating $f (standalone)"
             docker compose -f "$f" config --quiet
+          done
+          # Overlays — must be layered on the base. cohost/dev/export/prod each
+          # only redefine fields on services the base owns; standalone validation
+          # would error on missing image/build for those services.
+          for overlay in docker-compose.cohost.yml docker-compose.dev.yml docker-compose.export.yml docker-compose.prod.yml; do
+            echo "Validating docker-compose.yml + $overlay"
+            docker compose -f docker-compose.yml -f "$overlay" config --quiet
           done
 
       - name: Lint shell scripts (shellcheck)
