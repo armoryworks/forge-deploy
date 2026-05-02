@@ -32,10 +32,11 @@ ERROR: refresh.sh is the legacy git-pull-and-rebuild proxy, retired on the Pi si
        This host has qb-deploy installed (state file at /etc/qb-engineer/deploy-state.json).
 
        Use qb-deploy instead:
-         qb-deploy --list           # see available builds in GHCR
-         qb-deploy <main-sha>       # deploy a specific build
-         qb-deploy --status         # current deployed SHA per service
-         qb-deploy --rollback       # revert to prior tag
+         qb-deploy --list --releases # see available semver tags in GHCR
+         qb-deploy 1.2.3             # deploy that semver to all services
+         qb-deploy --list            # see recent main-<sha> tags (legacy)
+         qb-deploy --status          # current deployed tag per service
+         qb-deploy --rollback        # revert to prior tag
 
        refresh.sh remains the dev-side dev-loop tool (workstations doing local builds).
 EOF
