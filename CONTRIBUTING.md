@@ -131,14 +131,87 @@ shell scripts (shellcheck), Dockerfiles (hadolint), and YAML
 
 ## Releasing
 
-Tag a `vX.Y.Z` from `main` and push. The `release.yml` workflow creates
-a GitHub release with auto-generated notes. Pin the chosen image tags
-of `qb-engineer-ui` and `qb-engineer-server` in `docker-compose.yml`
-*before* tagging — the release IS the compose file, so it must
-reference real images.
+### This repo (`qb-engineer-deploy`) — manual tag
 
-Then update [release-manifest.md in the umbrella repo](https://github.com/danielhokanson/qb-engineer/blob/main/release-manifest.md)
-to record the bundle.
+`qb-engineer-deploy` publishes no Docker image; the release IS the
+compose file + scripts at that tag. Workflow:
+
+1. Pin the chosen image tags of `qb-engineer-ui`, `qb-engineer-server`,
+   and `qb-engineer-test` in `docker-compose.yml`.
+2. Tag `vX.Y.Z` from `main` and push. `release.yml` creates a GitHub
+   release with auto-generated notes.
+3. Update [release-manifest.md in the umbrella repo](https://github.com/danielhokanson/qb-engineer/blob/main/release-manifest.md)
+   to record the bundle.
+
+### Sibling image repos — auto-bumped semver
+
+`qb-engineer-server`, `qb-engineer-ui`, and `qb-engineer-test` each
+publish a multi-arch GHCR image on every push to `main`, with a real
+semver tag that auto-derives from a `VERSION` file at the repo root.
+
+- **`VERSION`** holds `MAJOR.MINOR.BASE` (e.g. `0.0.0`, `0.1.0`,
+  `1.0.0`). Manual edit only.
+- **Patch is computed in CI** as `BASE + (commits since VERSION was
+  last touched)`. Resets to 0 the moment `VERSION` is edited and
+  committed.
+- **Tag set per main push:** `<X.Y.Z>` (immutable patch), `<X.Y>`
+  (floating minor), `latest` (dev exploration only — never deployed),
+  `main-<sha>` (legacy hash tag, kept for compatibility).
+- **Tag set per `v*.*.*` git tag:** adds `<X>` (floating major) and
+  bypasses the VERSION-file computation entirely. Use for explicit
+  milestones.
+
+Operator workflow on the image repos:
+
+```bash
+# Patch bump — automatic on every main commit. Nothing to do.
+
+# Minor bump — edit VERSION + commit:
+echo "0.1.0" > VERSION
+git commit -am "Bump VERSION to 0.1.0"
+git push origin main
+# next release.yml run publishes 0.1.0 + 0.1 + latest + main-<sha>
+
+# Major bump — same shape:
+echo "1.0.0" > VERSION
+git commit -am "Bump VERSION to 1.0.0"
+git push origin main
+
+# Milestone semver (no VERSION edit needed):
+git tag -a v2.0.0 -m "Major release" && git push origin v2.0.0
+# release.yml publishes 2.0.0 + 2.0 + 2 (does not touch VERSION)
+```
+
+Why the `VERSION`-file model: hash tags (`main-<sha>`) are opaque to
+operators staring at GHCR. Semver tags read like real versions, sort
+lexicographically in the right order, and let `qb-deploy --list
+--releases` surface a meaningful list. Patches auto-increment because
+the operator shouldn't have to edit a file for every commit.
+
+See [docs/cicd-design.md §Phase 8 addendum](https://github.com/danielhokanson/qb-engineer/blob/main/docs/cicd-design.md)
+for the design background and the matrix-split + Node 24 details.
+
+## Operator deploys on the Pi
+
+Use `qb-deploy` for ongoing deploys (after first-time `setup.sh`):
+
+```bash
+qb-deploy --list --releases   # show available semver tags in GHCR
+qb-deploy 0.1.5               # deploy that semver to all services
+qb-deploy --list              # show recent main-<sha> tags (legacy)
+qb-deploy main-abc1234        # deploy a specific SHA
+qb-deploy --status            # current deployed tag + container health
+qb-deploy --rollback          # re-pin to the previously deployed tag
+qb-deploy --service api 0.1.5 # narrow to one service
+```
+
+`qb-deploy` refuses `latest` — only immutable tags (`X.Y.Z` or
+`main-<sha>`) deploy. Healthcheck-gated; failed deploys auto-rollback.
+
+The deploy repo itself is NOT pulled by `qb-deploy`; it ships compose
+files via `git clone` at a tag. Update the deploy repo with
+`qb-deploy --self-update` (runs `git pull --ff-only` against
+`/opt/qb-engineer-deploy` + reinstalls the CLI).
 
 ## Where to file what
 
