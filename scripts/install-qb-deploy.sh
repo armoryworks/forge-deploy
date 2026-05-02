@@ -13,6 +13,19 @@
 
 set -euo pipefail
 
+# Auto-elevate. The install touches /usr/local/bin and /etc/qb-engineer,
+# both of which require root. Re-exec under sudo if not already root so
+# the script runs cleanly end-to-end instead of failing partway through
+# at the install(1) step. Preserves caller env (notably QB_DEPLOY_USER)
+# via sudo -E.
+if [[ "$EUID" -ne 0 ]]; then
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "ERROR: must run as root (sudo not available either)" >&2
+    exit 1
+  fi
+  exec sudo -E "$0" "$@"
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 REPO_ROOT_DEFAULT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
@@ -57,10 +70,6 @@ DEPLOY_GROUP=$(id -gn "$DEPLOY_USER")
 # ─────────────────────────────────────────────────────────────
 
 step "Pre-flight checks"
-
-if [[ "$EUID" -ne 0 ]]; then
-  warn "Not running as root — system-wide install steps will require sudo."
-fi
 
 for cmd in docker curl jq; do
   if ! command -v "$cmd" >/dev/null 2>&1; then

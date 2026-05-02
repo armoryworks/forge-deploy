@@ -419,8 +419,11 @@ cmd_self_update() {
   if [[ ! -d "${REPO_ROOT}/.git" ]]; then
     die "Not a git checkout: $REPO_ROOT"
   fi
-  if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
-    die "Local changes present in $REPO_ROOT — refusing to pull"
+  # Only refuse on tracked-file modifications. Untracked operator files
+  # (.env, override.yml) are gitignored upstream but older Pi installs may
+  # still have them present and unignored — they shouldn't block self-update.
+  if ! git -C "$REPO_ROOT" diff --quiet HEAD -- 2>/dev/null; then
+    die "Local changes to tracked files present in $REPO_ROOT — refusing to pull"
   fi
   git -C "$REPO_ROOT" pull --ff-only
   ok "Pulled latest"
@@ -470,7 +473,15 @@ deploy_service() {
   repo=$(service_repo "$svc_id")
   envvar=$(service_envvar "$svc_id")
   compose_svc=$(service_compose "$svc_id")
-  prior_tag=$(env_get "$envvar")
+  # Prefer the state file's `current` (last successful deploy) as the rollback
+  # target. The .env value is a snapshot of what's CONFIGURED, which can
+  # diverge from what's RUNNING if an operator hand-edited .env between
+  # deploys (e.g. set everything to 0.0.0 as a placeholder). Falling back to
+  # .env preserves first-deploy-ever semantics where state is empty.
+  prior_tag=$(state_get "$repo" current)
+  if [[ -z "$prior_tag" ]]; then
+    prior_tag=$(env_get "$envvar")
+  fi
 
   step "Deploying $svc_id -> $target_tag"
 
@@ -492,10 +503,15 @@ deploy_service() {
   fi
   ok "Image pulled"
 
-  if ! compose up -d "$compose_svc"; then
+  # --force-recreate: a previous failed `up -d` (e.g. port collision) can
+  # leave a container in a half-started state without published port
+  # bindings. Subsequent `up -d` runs see "config matches" and refuse to
+  # recreate. Forcing recreate every time guarantees fresh container with
+  # the merged config's port mappings actually applied. Cost: 2-5s per svc.
+  if ! compose up -d --force-recreate "$compose_svc"; then
     err "docker compose up -d failed"
     env_set "$envvar" "$prior_tag"
-    compose up -d "$compose_svc" || true
+    compose up -d --force-recreate "$compose_svc" || true
     log_event "$svc_id" "$prior_tag" "$target_tag" "up-failed"
     return 1
   fi
@@ -512,7 +528,7 @@ deploy_service() {
   err "Service did not become healthy — rolling back to $prior_tag"
   if [[ -n "$prior_tag" && "$prior_tag" != "$target_tag" ]]; then
     env_set "$envvar" "$prior_tag"
-    compose up -d "$compose_svc" || true
+    compose up -d --force-recreate "$compose_svc" || true
   fi
   log_event "$svc_id" "$prior_tag" "$target_tag" "unhealthy-rolled-back"
   return 1
