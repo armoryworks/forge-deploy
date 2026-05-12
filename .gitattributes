@@ -1,10 +1,10 @@
-# Force LF on shell scripts and the qb-deploy CLI — these run on Linux only
+# Force LF on shell scripts and the forge-deploy CLI — these run on Linux only
 # (the Pi production host and Linux/macOS dev machines). Without this, a
 # Windows clone with core.autocrlf=true would deliver CRLF endings and the
 # scripts would fail to execute.
 
 *.sh         text eol=lf
-scripts/qb-deploy text eol=lf
+scripts/forge-deploy text eol=lf
 
 # Compose / env / dot-config files: LF for portability between OSes.
 *.yml        text eol=lf

@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# install-qb-deploy.sh — Install or refresh the qb-deploy CLI on the Pi.
+# install-forge-deploy.sh — Install or refresh the forge-deploy CLI on the Pi.
 #
-# Idempotent: re-running is safe and preserves /etc/qb-engineer/deploy-state.json.
+# Idempotent: re-running is safe and preserves /etc/forge/deploy-state.json.
 #
 # Usage:
-#   sudo ./scripts/install-qb-deploy.sh
-#   sudo QB_DEPLOY_USER=qbedeploy ./scripts/install-qb-deploy.sh
+#   sudo ./scripts/install-forge-deploy.sh
+#   sudo FORGE_DEPLOY_USER=qbedeploy ./scripts/install-forge-deploy.sh
 #
 # Env:
-#   QB_DEPLOY_USER   Owner of /etc/qb-engineer + log file (default: invoking user, or current user)
-#   QB_DEPLOY_REPO   Path to the qb-engineer-deploy git checkout (default: detected from script location)
+#   FORGE_DEPLOY_USER   Owner of /etc/forge + log file (default: invoking user, or current user)
+#   FORGE_DEPLOY_REPO   Path to the forge-deploy git checkout (default: detected from script location)
 
 set -euo pipefail
 
-# Auto-elevate. The install touches /usr/local/bin and /etc/qb-engineer,
+# Auto-elevate. The install touches /usr/local/bin and /etc/forge,
 # both of which require root. Re-exec under sudo if not already root so
 # the script runs cleanly end-to-end instead of failing partway through
-# at the install(1) step. Preserves caller env (notably QB_DEPLOY_USER)
+# at the install(1) step. Preserves caller env (notably FORGE_DEPLOY_USER)
 # via sudo -E.
 if [[ "$EUID" -ne 0 ]]; then
   if ! command -v sudo >/dev/null 2>&1; then
@@ -30,11 +30,11 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 REPO_ROOT_DEFAULT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 readonly REPO_ROOT_DEFAULT
-readonly REPO_ROOT="${QB_DEPLOY_REPO:-${REPO_ROOT_DEFAULT}}"
-readonly INSTALL_BIN="/usr/local/bin/qb-deploy"
-readonly STATE_DIR="/etc/qb-engineer"
+readonly REPO_ROOT="${FORGE_DEPLOY_REPO:-${REPO_ROOT_DEFAULT}}"
+readonly INSTALL_BIN="/usr/local/bin/forge-deploy"
+readonly STATE_DIR="/etc/forge"
 readonly STATE_FILE="${STATE_DIR}/deploy-state.json"
-readonly LOG_FILE="/var/log/qb-engineer-deploy.log"
+readonly LOG_FILE="/var/log/forge-deploy.log"
 
 # Color (skipped when not a TTY)
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -51,8 +51,8 @@ die()  { printf '    %s[XX]%s %s\n' "${C_RED}" "${C_RESET}" "$1" >&2; exit 1; }
 # Determine deploy user
 # ─────────────────────────────────────────────────────────────
 
-if [[ -n "${QB_DEPLOY_USER:-}" ]]; then
-  DEPLOY_USER="$QB_DEPLOY_USER"
+if [[ -n "${FORGE_DEPLOY_USER:-}" ]]; then
+  DEPLOY_USER="$FORGE_DEPLOY_USER"
 elif [[ -n "${SUDO_USER:-}" ]]; then
   DEPLOY_USER="$SUDO_USER"
 else
@@ -83,8 +83,8 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 ok "Docker Compose plugin available"
 
-if [[ ! -f "${REPO_ROOT}/scripts/qb-deploy" ]]; then
-  die "Cannot find qb-deploy script at ${REPO_ROOT}/scripts/qb-deploy"
+if [[ ! -f "${REPO_ROOT}/scripts/forge-deploy" ]]; then
+  die "Cannot find forge-deploy script at ${REPO_ROOT}/scripts/forge-deploy"
 fi
 ok "Source repo: ${REPO_ROOT}"
 
@@ -94,7 +94,7 @@ ok "Source repo: ${REPO_ROOT}"
 
 step "Installing CLI"
 
-install -m 0755 "${REPO_ROOT}/scripts/qb-deploy" "$INSTALL_BIN"
+install -m 0755 "${REPO_ROOT}/scripts/forge-deploy" "$INSTALL_BIN"
 ok "Installed: $INSTALL_BIN"
 
 # ─────────────────────────────────────────────────────────────
@@ -115,9 +115,9 @@ fi
 if [[ ! -f "$STATE_FILE" ]]; then
   cat > "$STATE_FILE" <<'JSON'
 {
-  "qb-engineer-server": {"current": "", "prior": "", "deployedAt": ""},
-  "qb-engineer-ui":     {"current": "", "prior": "", "deployedAt": ""},
-  "qb-engineer-test":   {"current": "", "prior": "", "deployedAt": ""}
+  "forge-api": {"current": "", "prior": "", "deployedAt": ""},
+  "forge-ui":     {"current": "", "prior": "", "deployedAt": ""},
+  "forge-test":   {"current": "", "prior": "", "deployedAt": ""}
 }
 JSON
   chmod 0640 "$STATE_FILE"
@@ -131,9 +131,9 @@ else
     warn "Existing state file was invalid JSON — backed up to $local_backup"
     cat > "$STATE_FILE" <<'JSON'
 {
-  "qb-engineer-server": {"current": "", "prior": "", "deployedAt": ""},
-  "qb-engineer-ui":     {"current": "", "prior": "", "deployedAt": ""},
-  "qb-engineer-test":   {"current": "", "prior": "", "deployedAt": ""}
+  "forge-api": {"current": "", "prior": "", "deployedAt": ""},
+  "forge-ui":     {"current": "", "prior": "", "deployedAt": ""},
+  "forge-test":   {"current": "", "prior": "", "deployedAt": ""}
 }
 JSON
   fi
@@ -167,9 +167,9 @@ cat <<EOF
 Next steps:
   1. Make sure ${REPO_ROOT}/.env exists (run ./setup.sh once if not).
   2. Confirm ${REPO_ROOT}/docker-compose.prod.yml is present.
-  3. Try:    qb-deploy --help
-             qb-deploy --list
-             qb-deploy --status
+  3. Try:    forge-deploy --help
+             forge-deploy --list
+             forge-deploy --status
 
 Repo:   ${REPO_ROOT}
 State:  ${STATE_FILE}

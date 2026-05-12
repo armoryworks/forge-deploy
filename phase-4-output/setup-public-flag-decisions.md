@@ -62,7 +62,7 @@ Priority order:
    - `n` → abort with instructions to re-run with `--hostname`.
    - any other input → use as the hostname (custom value).
 3. `hostname` (short) as fallback if `-f` fails.
-4. Final fallback `qb-engineer` (matches pre-existing default CN).
+4. Final fallback `forge` (matches pre-existing default CN).
 
 The cert subjectAltName always includes:
 - `IP:<host primary IP>` (from `hostname -I`)

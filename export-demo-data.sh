@@ -2,7 +2,7 @@
 # Orchestrates the disposable export stack.
 #
 # Stands up a throwaway Postgres + API from docker-compose.export.yml, the API
-# seeds itself + dumps business entities to ./qb-engineer-ui/public/demo-data/
+# seeds itself + dumps business entities to ./forge-ui/public/demo-data/
 # and exits. This script then tears the stack down (including volumes) so
 # nothing lingers. The dev stack is untouched.
 
@@ -11,7 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-OUT_DIR="qb-engineer-ui/public/demo-data"
+OUT_DIR="forge-ui/public/demo-data"
 COMPOSE_FILE="docker-compose.export.yml"
 
 echo "[export] Cleaning previous demo-data output..."
@@ -19,15 +19,15 @@ find "$OUT_DIR" -type f ! -name '.gitkeep' -delete 2>/dev/null || true
 
 cleanup() {
   echo "[export] Tearing down export stack..."
-  docker compose -p qb-engineer-export -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
+  docker compose -p forge-export -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
 echo "[export] Building + running export stack (this can take a few minutes on first run)..."
-docker compose -p qb-engineer-export -f "$COMPOSE_FILE" up \
+docker compose -p forge-export -f "$COMPOSE_FILE" up \
   --build \
   --abort-on-container-exit \
-  --exit-code-from qb-engineer-api-export
+  --exit-code-from forge-api-export
 
 EXIT_CODE=$?
 

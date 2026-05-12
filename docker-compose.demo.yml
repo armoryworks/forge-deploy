@@ -1,29 +1,29 @@
-# Static-only demo deployment for demo.qb-engineer.com.
+# Static-only demo deployment for demo.forge.com.
 #
 # Stands up a single nginx container serving the Angular demo bundle.
 # No API, no database, no SignalR, no storage — all data is synthesized
 # in-browser by demoApiInterceptor against /demo-data/*.json.
 #
 # Build / deploy:
-#   docker compose -p qb-engineer-demo -f docker-compose.demo.yml up -d --build
+#   docker compose -p forge-demo -f docker-compose.demo.yml up -d --build
 #
-# Refresh demo data first (regenerates ./qb-engineer-ui/public/demo-data/*.json):
+# Refresh demo data first (regenerates ./forge-ui/public/demo-data/*.json):
 #   ./export-demo-data.sh       (bash)
 #   .\export-demo-data.ps1      (PowerShell)
 #
 # Put a reverse proxy (Cloudflare, Caddy, or an outer nginx with Let's Encrypt)
-# in front of this container for TLS + the demo.qb-engineer.com hostname.
+# in front of this container for TLS + the demo.forge.com hostname.
 # This compose file deliberately doesn't bake in a cert or a hostname.
 
 services:
-  qb-engineer-demo:
+  forge-demo:
     build:
-      context: ./qb-engineer-ui
+      context: ./forge-ui
       dockerfile: Dockerfile.demo
       args:
         BUILD_VERSION: ${BUILD_VERSION:-demo}
         BUILD_SHA: ${BUILD_SHA:-demo}
-    container_name: qb-engineer-demo
+    container_name: forge-demo
     ports:
       - "${DEMO_BIND:-127.0.0.1}:${DEMO_HOST_PORT:-4203}:80"
     restart: unless-stopped

@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# setup.ps1 - First-time setup for QB Engineer
+# setup.ps1 - First-time setup for Forge
 #
 # Checks all prerequisites, creates .env, builds and starts the full stack.
 # Run from the repo root after cloning.
@@ -62,7 +62,7 @@ if ($Public) {
 function Write-Banner {
     Write-Host ""
     Write-Host "  ╔══════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "  ║        QB Engineer — First-Time Setup    ║" -ForegroundColor Cyan
+    Write-Host "  ║        Forge — First-Time Setup    ║" -ForegroundColor Cyan
     Write-Host "  ╚══════════════════════════════════════════╝" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -356,7 +356,7 @@ Write-Step "Verifying project files"
 if (-not (Test-Path "docker-compose.yml")) {
     Write-Fail "docker-compose.yml not found."
     Write-Instruction "Run this script from the repo root:"
-    Write-Instruction "  cd qb-engineer-wrapper"
+    Write-Instruction "  cd forge-wrapper"
     Write-Instruction "  .\setup.ps1"
     exit 1
 }
@@ -364,7 +364,7 @@ if (-not (Test-Path "docker-compose.yml")) {
 if (-not (Test-Path ".env.example")) {
     Write-Fail ".env.example not found — the repo may be incomplete."
     Write-Instruction "Try a fresh clone:"
-    Write-Instruction "  git clone https://github.com/danielhokanson/qb-engineer-wrapper.git"
+    Write-Instruction "  git clone https://github.com/danielhokanson/forge-wrapper.git"
     exit 1
 }
 
@@ -409,7 +409,7 @@ if (Test-Path ".env") {
 if ($Seeded) {
     Write-Step "Demo data user password"
     Write-Host ""
-    Write-Host "    Demo data includes 9 test users (admin@qbengineer.local, etc.)"
+    Write-Host "    Demo data includes 9 test users (admin@forge.local, etc.)"
     Write-Host "    You must set a temporary password for these accounts."
     Write-Host "    Requirements: 8+ chars, uppercase, lowercase, digit, special char"
     Write-Host ""
@@ -464,7 +464,7 @@ if ($buildVersion -and $buildSha) {
     $env:BUILD_VERSION = $buildVersion
     $env:BUILD_SHA     = $buildSha
     $versionJson = '{"version":"' + $buildVersion + '","sha":"' + $buildSha + '"}'
-    $versionPath = Join-Path (Get-Location) "qb-engineer-ui\public\assets\version.json"
+    $versionPath = Join-Path (Get-Location) "forge-ui\public\assets\version.json"
     if (Test-Path (Split-Path $versionPath)) {
         Set-Content -Path $versionPath -Value $versionJson -Encoding UTF8 -NoNewline
         Write-Ok "Build $buildVersion ($buildSha)"
@@ -482,21 +482,21 @@ if ($buildVersion -and $buildSha) {
 Write-Step "Building Docker images (this may take several minutes on first run)"
 
 Invoke-Cmd "Building API image" {
-    docker compose build qb-engineer-api
+    docker compose build forge-api
 }
 
 Invoke-Cmd "Building UI image" {
-    docker compose build qb-engineer-ui
+    docker compose build forge-ui
 }
 
 Write-Step "Starting core services (db, storage, backup, api, ui)"
 
 $coreServices = @(
-    "qb-engineer-db",
-    "qb-engineer-storage",
-    "qb-engineer-backup",
-    "qb-engineer-api",
-    "qb-engineer-ui"
+    "forge",
+    "forge-storage",
+    "forge-backup",
+    "forge-api",
+    "forge-ui"
 )
 
 # --- Git Hooks ---
@@ -514,7 +514,7 @@ if ($IncludeAi) {
     Write-Step "Starting AI service (Ollama)"
     Write-Warn "First run downloads AI models (~4 GB) — this can take several minutes"
     Invoke-Cmd "docker compose --profile ai up -d" {
-        docker compose --profile ai up -d qb-engineer-ai qb-engineer-ai-init
+        docker compose --profile ai up -d forge-ai forge-ai-init
     }
 }
 
@@ -524,7 +524,7 @@ if ($IncludeTts) {
     Write-Step "Starting TTS service (Coqui)"
     Write-Warn "First run downloads the VCTK voice model (~500 MB)"
     Invoke-Cmd "docker compose --profile tts up -d" {
-        docker compose --profile tts up -d qb-engineer-tts
+        docker compose --profile tts up -d forge-tts
     }
 }
 
@@ -533,7 +533,7 @@ if ($IncludeTts) {
 if ($IncludeSigning) {
     Write-Step "Starting DocuSeal signing service"
     Invoke-Cmd "docker compose --profile signing up -d" {
-        docker compose --profile signing up -d qb-engineer-signing
+        docker compose --profile signing up -d forge-signing
     }
 }
 
@@ -548,7 +548,7 @@ $elapsed = 0
 $healthy = $false
 
 while ($elapsed -lt $maxWait) {
-    $status = docker inspect --format='{{.State.Health.Status}}' qb-engineer-api 2>$null
+    $status = docker inspect --format='{{.State.Health.Status}}' forge-api 2>$null
     if ($status -eq "healthy") {
         $healthy = $true
         break
@@ -565,7 +565,7 @@ if ($healthy) {
 } else {
     Write-Warn "API health check timed out after $maxWait s"
     Write-Warn "This is normal on very first start while migrations run."
-    Write-Warn "Check progress with: docker compose logs -f qb-engineer-api"
+    Write-Warn "Check progress with: docker compose logs -f forge-api"
 }
 
 # Reset RECREATE_DB so the next restart doesn't wipe the database again
@@ -605,9 +605,9 @@ if ($IncludeTts)     { Write-Host "  Coqui TTS:    http://localhost:5002" -Foreg
 if ($IncludeSigning) { Write-Host "  DocuSeal:     http://localhost:3000" -ForegroundColor White }
 Write-Host ""
 Write-Host "  ─── Useful commands ───" -ForegroundColor DarkGray
-Write-Host "  View logs:    docker compose logs -f qb-engineer-api" -ForegroundColor DarkGray
+Write-Host "  View logs:    docker compose logs -f forge-api" -ForegroundColor DarkGray
 Write-Host "  Stop all:     docker compose stop" -ForegroundColor DarkGray
 Write-Host "  Start all:    docker compose up -d" -ForegroundColor DarkGray
 Write-Host "  Update:       .\refresh.ps1" -ForegroundColor DarkGray
-Write-Host "  DB shell:     docker compose exec qb-engineer-db psql -U postgres -d qb_engineer" -ForegroundColor DarkGray
+Write-Host "  DB shell:     docker compose exec forge psql -U postgres -d forge" -ForegroundColor DarkGray
 Write-Host ""

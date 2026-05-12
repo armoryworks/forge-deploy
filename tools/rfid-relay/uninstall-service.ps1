@@ -1,7 +1,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Uninstalls the QB Engineer RFID Relay Windows Service.
+    Uninstalls the Forge RFID Relay Windows Service.
 
 .PARAMETER InstallDir
     Directory where the executable was installed. Default matches install-service.ps1.
@@ -9,13 +9,13 @@
 #>
 
 param(
-    [string] $InstallDir = "C:\Program Files\QB Engineer\RfidRelay"
+    [string] $InstallDir = "C:\Program Files\Forge\RfidRelay"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$ServiceName = "QbEngineerRfidRelay"
+$ServiceName = "ForgeRfidRelay"
 
 function Write-Step([string]$msg) { Write-Host "`n>> $msg" -ForegroundColor Cyan }
 function Write-OK([string]$msg)   { Write-Host "   OK  $msg" -ForegroundColor Green }
@@ -45,5 +45,5 @@ if (Test-Path $InstallDir) {
 }
 
 Write-Host ""
-Write-Host "QB Engineer RFID Relay uninstalled." -ForegroundColor Green
+Write-Host "Forge RFID Relay uninstalled." -ForegroundColor Green
 Write-Host ""

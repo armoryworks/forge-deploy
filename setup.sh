@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# setup.sh — First-time setup for QB Engineer (Linux / macOS)
+# setup.sh — First-time setup for Forge (Linux / macOS)
 #
 # Two paths:
 #
 #   ./setup.sh                 # default: GHCR-pull. Pulls prebuilt images
-#                              # from ghcr.io/danielhokanson/qb-engineer-{server,ui,test}
+#                              # from ghcr.io/danielhokanson/forge-{server,ui,test}
 #                              # and brings the stack up. Requires only this
-#                              # repo (qb-engineer-deploy) cloned. This is
+#                              # repo (forge-deploy) cloned. This is
 #                              # the production / tester path.
 #
 #   ./setup.sh --source        # developer mode. Builds images locally from
-#                              # source. Requires qb-engineer-server,
-#                              # qb-engineer-ui, qb-engineer-test cloned as
-#                              # siblings of qb-engineer-deploy.
+#                              # source. Requires forge-api,
+#                              # forge-ui, forge-test cloned as
+#                              # siblings of forge-deploy.
 #
 # Auto-detects platform, architecture, and available resources. Applies
 # memory tuning on low-RAM systems, offers SSL on headless/server installs.
@@ -27,7 +27,7 @@
 #
 # Options:
 #   --source             Build images locally from source. Requires sibling
-#                        qb-engineer-server / qb-engineer-ui / qb-engineer-test
+#                        forge-api / forge-ui / forge-test
 #                        repos. Default is GHCR-pull (no source needed).
 #   --seeded             Seed demo data (users, jobs, customers, etc.)
 #   --fresh              Wipe existing database and start over
@@ -171,7 +171,7 @@ rollback_add() {
 # Reverses the system-side changes made by `setup.sh --public` on this host.
 # Run with: bash setup-public-rollback.sh
 #
-# This does NOT stop or remove the qb-engineer Docker stack. To do that:
+# This does NOT stop or remove the forge Docker stack. To do that:
 #   docker compose down
 #
 # Generated: $(date -Iseconds 2>/dev/null || date)
@@ -259,7 +259,7 @@ fi
 # Precedence:
 #   1. --cohost / --standalone CLI flag
 #   2. QBE_HOSTING_MODE in existing .env
-#   3. Auto-detect: nginx vhost for qb-engineer, or active cloudflared
+#   3. Auto-detect: nginx vhost for forge, or active cloudflared
 #   4. Default: standalone
 HOSTING_MODE=""
 MODE_SOURCE=""
@@ -274,8 +274,8 @@ fi
 
 if [[ -z "$HOSTING_MODE" ]]; then
     # Auto-detect: host-level nginx vhost or active cloudflared
-    if ls /etc/nginx/sites-enabled/qb-engineer*.conf &>/dev/null 2>&1 || \
-       ls /etc/nginx/conf.d/qb-engineer*.conf &>/dev/null 2>&1; then
+    if ls /etc/nginx/sites-enabled/forge*.conf &>/dev/null 2>&1 || \
+       ls /etc/nginx/conf.d/forge*.conf &>/dev/null 2>&1; then
         HOSTING_MODE="cohost"
         MODE_SOURCE="detected host nginx vhost"
     elif command -v systemctl &>/dev/null && systemctl is-active --quiet cloudflared 2>/dev/null; then
@@ -312,7 +312,7 @@ fi
 
 echo ""
 echo "  ╔══════════════════════════════════════════════╗"
-echo "  ║        QB Engineer — First-Time Setup        ║"
+echo "  ║        Forge — First-Time Setup        ║"
 echo "  ╚══════════════════════════════════════════════╝"
 echo ""
 if $SOURCE_BUILD; then
@@ -405,7 +405,7 @@ if $PUBLIC && $PUBLIC_PREFLIGHT; then
         case "$LIS_NAME" in
             nginx)
                 if command -v systemctl &>/dev/null && systemctl list-unit-files nginx.service &>/dev/null; then
-                    info "System nginx is running and would block the qb-engineer UI container."
+                    info "System nginx is running and would block the forge UI container."
                     read -rp "    Stop and disable system nginx (sudo systemctl stop nginx && sudo systemctl disable nginx)? (y/N) " yn
                     if [[ "$yn" =~ ^[Yy]$ ]]; then
                         if sudo systemctl stop nginx && sudo systemctl disable nginx; then
@@ -420,7 +420,7 @@ if $PUBLIC && $PUBLIC_PREFLIGHT; then
                     else
                         fail "Port ${PUBPORT} still held by nginx. Aborting."
                         info "Either stop nginx manually, pass --no-public-preflight to skip this check,"
-                        info "or use --cohost so nginx can reverse-proxy to qb-engineer."
+                        info "or use --cohost so nginx can reverse-proxy to forge."
                         exit 1
                     fi
                 else
@@ -433,7 +433,7 @@ if $PUBLIC && $PUBLIC_PREFLIGHT; then
                 local_unit="apache2"
                 [[ "$LIS_NAME" == "httpd" ]] && local_unit="httpd"
                 if command -v systemctl &>/dev/null && systemctl list-unit-files "${local_unit}.service" &>/dev/null; then
-                    info "System ${local_unit} is running and would block the qb-engineer UI container."
+                    info "System ${local_unit} is running and would block the forge UI container."
                     read -rp "    Stop and disable system ${local_unit} (sudo systemctl stop ${local_unit} && sudo systemctl disable ${local_unit})? (y/N) " yn
                     if [[ "$yn" =~ ^[Yy]$ ]]; then
                         if sudo systemctl stop "$local_unit" && sudo systemctl disable "$local_unit"; then
@@ -510,7 +510,7 @@ if $PUBLIC && $PUBLIC_PREFLIGHT; then
         PUBLIC_HOSTNAME_RESOLVED="$PUBLIC_HOSTNAME"
         ok "Cert hostname (from --hostname): $PUBLIC_HOSTNAME_RESOLVED"
     else
-        DETECTED_HOST=$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo "qb-engineer")
+        DETECTED_HOST=$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo "forge")
         echo ""
         info "Self-signed cert will be issued for a hostname/CN."
         read -rp "    Use detected hostname '${DETECTED_HOST}'? [Y/n/<custom>] " hn
@@ -668,7 +668,7 @@ for PORT in $CHECK_PORTS; do
         # docker-proxy on the standalone HTTP/HTTPS ports usually means a
         # previous run of this stack — non-fatal.
         if [[ "$HOLDER" == "docker-proxy" ]]; then
-            ok "Port $PORT: held by docker-proxy (likely a previous qb-engineer run)"
+            ok "Port $PORT: held by docker-proxy (likely a previous forge run)"
         else
             CONFLICTS="$CONFLICTS $PORT(${HOLDER})"
         fi
@@ -706,15 +706,15 @@ step "Verifying project files"
 
 if [[ ! -f "docker-compose.yml" ]]; then
     fail "docker-compose.yml not found."
-    info "Run this script from the qb-engineer-deploy repo root:"
-    info "  cd qb-engineer-deploy && ./setup.sh"
+    info "Run this script from the forge-deploy repo root:"
+    info "  cd forge-deploy && ./setup.sh"
     exit 1
 fi
 
 if [[ ! -f ".env.example" ]]; then
     fail ".env.example not found — the repo may be incomplete."
     info "Try a fresh clone:"
-    info "  git clone https://github.com/danielhokanson/qb-engineer-deploy.git"
+    info "  git clone https://github.com/danielhokanson/forge-deploy.git"
     exit 1
 fi
 
@@ -724,7 +724,7 @@ ok "Project files found"
 # 3b. Source-build mode: verify sibling repos
 # ─────────────────────────────────────────────────────────────
 # In --source mode the docker-compose.yml `build:` blocks reference
-# ../qb-engineer-{server,ui,test}. The deploy repo must be cloned
+# ../forge-{server,ui,test}. The deploy repo must be cloned
 # alongside its sibling source repos. In GHCR-pull mode (default) the
 # prod overlay swaps build for image: and these directories are not
 # touched.
@@ -732,7 +732,7 @@ if $SOURCE_BUILD; then
     step "Verifying sibling source repos (--source mode)"
 
     PARENT_DIR=$(cd .. && pwd)
-    REQUIRED_SIBLINGS=(qb-engineer-server qb-engineer-ui qb-engineer-test)
+    REQUIRED_SIBLINGS=(forge-api forge-ui forge-test)
     MISSING_SIBLINGS=()
 
     for sib in "${REQUIRED_SIBLINGS[@]}"; do
@@ -829,7 +829,7 @@ else
     if $IS_COHOST; then
         # In cohost mode, the host-level proxy controls the public URL. The
         # user must edit FRONTEND_BASE_URL / CORS_ORIGINS / MINIO_PUBLIC_ENDPOINT
-        # in .env to match the external hostname (e.g. https://qb-engineer.com).
+        # in .env to match the external hostname (e.g. https://forge.com).
         sed -i "s|^MOCK_INTEGRATIONS=true|MOCK_INTEGRATIONS=false|" .env
         warn "Cohost mode: edit .env to set FRONTEND_BASE_URL, CORS_ORIGINS, and"
         warn "MINIO_PUBLIC_ENDPOINT to the hostname served by your reverse proxy."
@@ -852,7 +852,7 @@ fi
 if $SEED_DEMO; then
     step "Demo data user password"
     echo ""
-    echo "    Demo data includes 9 test users (admin@qbengineer.local, etc.)"
+    echo "    Demo data includes 9 test users (admin@forge.local, etc.)"
     echo "    You must set a temporary password for these accounts."
     echo "    Requirements: 8+ chars, uppercase, lowercase, digit, special char"
     echo ""
@@ -927,10 +927,10 @@ BUILD_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "dev")
 export BUILD_VERSION BUILD_SHA
 
 # version.json injection only matters for source-build mode. With sibling
-# context paths the UI assets dir lives at ../qb-engineer-ui/public/assets.
+# context paths the UI assets dir lives at ../forge-ui/public/assets.
 # In GHCR-pull mode the image already has version metadata baked in.
 if $SOURCE_BUILD; then
-    VERSION_DIR="../qb-engineer-ui/public/assets"
+    VERSION_DIR="../forge-ui/public/assets"
     if [[ -d "$VERSION_DIR" ]]; then
         echo -n "{\"version\":\"${BUILD_VERSION}\",\"sha\":\"${BUILD_SHA}\"}" > "${VERSION_DIR}/version.json"
         ok "Build ${BUILD_VERSION} (${BUILD_SHA})"
@@ -960,8 +960,8 @@ if $ENABLE_SSL && ! $IS_COHOST; then
         HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 
         # Pick the cert CN: explicit hostname > public-resolved hostname >
-        # detected hostname > "qb-engineer".
-        CERT_CN="qb-engineer"
+        # detected hostname > "forge".
+        CERT_CN="forge"
         SAN_DNS="DNS:localhost"
         if [[ -n "$PUBLIC_HOSTNAME_RESOLVED" ]]; then
             CERT_CN="$PUBLIC_HOSTNAME_RESOLVED"
@@ -1008,25 +1008,25 @@ if $NEEDS_OVERRIDE; then
         # SSL: UI ports + cert volume
         if $ENABLE_SSL; then
             cat <<'SSLBLOCK'
-  qb-engineer-ui:
+  forge-ui:
     ports:
       - "443:443"
       - "80:80"
     volumes:
       - ./certs:/etc/nginx/certs:ro
-      - ./qb-engineer-ui/nginx-ssl.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./forge-ui/nginx-ssl.conf:/etc/nginx/conf.d/default.conf:ro
 SSLBLOCK
         fi
 
         # Memory limits for low-RAM systems
         if $IS_LOW_RAM; then
             cat <<'MEMBLOCK'
-  qb-engineer-api:
+  forge-api:
     deploy:
       resources:
         limits:
           memory: 1G
-  qb-engineer-db:
+  forge:
     deploy:
       resources:
         limits:
@@ -1096,17 +1096,17 @@ if $SOURCE_BUILD; then
     echo ""
 
     echo "    Building API image..."
-    docker compose build qb-engineer-api
+    docker compose build forge-api
     ok "API image built"
 
     echo "    Building UI image..."
-    docker compose build qb-engineer-ui
+    docker compose build forge-ui
     ok "UI image built"
 else
     step "Pulling prebuilt images from GHCR"
     info "Multi-arch images: linux/amd64 + linux/arm64. Docker auto-selects."
     echo ""
-    if ! docker compose pull qb-engineer-api qb-engineer-ui; then
+    if ! docker compose pull forge-api forge-ui; then
         fail "Failed to pull GHCR images"
         info "Common causes:"
         info "  - No network connectivity to ghcr.io"
@@ -1128,30 +1128,30 @@ fi
 step "Starting core services (db, storage, backup, api, ui)"
 
 docker compose up -d --remove-orphans \
-    qb-engineer-db \
-    qb-engineer-storage \
-    qb-engineer-backup \
-    qb-engineer-api \
-    qb-engineer-ui
+    forge \
+    forge-storage \
+    forge-backup \
+    forge-api \
+    forge-ui
 
 # --- Optional: AI ---
 if $INCLUDE_AI; then
     step "Starting AI service (Ollama)"
     warn "First run downloads AI models (~4 GB) — this can take several minutes"
-    docker compose --profile ai up -d qb-engineer-ai qb-engineer-ai-init
+    docker compose --profile ai up -d forge-ai forge-ai-init
 fi
 
 # --- Optional: TTS ---
 if $INCLUDE_TTS; then
     step "Starting TTS service (Coqui)"
     warn "First run downloads the VCTK voice model (~500 MB)"
-    docker compose --profile tts up -d qb-engineer-tts
+    docker compose --profile tts up -d forge-tts
 fi
 
 # --- Optional: Signing ---
 if $INCLUDE_SIGNING; then
     step "Starting DocuSeal signing service"
-    docker compose --profile signing up -d qb-engineer-signing
+    docker compose --profile signing up -d forge-signing
 fi
 
 # ─────────────────────────────────────────────────────────────
@@ -1171,7 +1171,7 @@ ELAPSED=0
 HEALTHY=false
 
 while (( ELAPSED < MAX_WAIT )); do
-    STATUS=$(docker inspect --format='{{.State.Health.Status}}' qb-engineer-api 2>/dev/null || echo "unknown")
+    STATUS=$(docker inspect --format='{{.State.Health.Status}}' forge-api 2>/dev/null || echo "unknown")
     if [[ "$STATUS" == "healthy" ]]; then
         HEALTHY=true
         break
@@ -1187,7 +1187,7 @@ if $HEALTHY; then
 else
     warn "API health check timed out after ${MAX_WAIT}s"
     warn "This is normal on first start while migrations run."
-    warn "Check progress: docker compose logs -f qb-engineer-api"
+    warn "Check progress: docker compose logs -f forge-api"
 fi
 
 # Reset RECREATE_DB so next restart doesn't wipe again
@@ -1274,17 +1274,17 @@ fi
 
 echo "  ─── Useful Commands ───"
 echo ""
-echo "  View logs:    docker compose logs -f qb-engineer-api"
+echo "  View logs:    docker compose logs -f forge-api"
 echo "  Stop all:     docker compose stop"
 echo "  Start all:    docker compose up -d"
 if $SOURCE_BUILD; then
 echo "  Update:       ./refresh.sh        (rebuild from source — dev loop)"
 else
 echo "  Update:       docker compose pull && docker compose up -d"
-echo "                or install qb-deploy for healthcheck-gated rollouts"
-echo "                  (see scripts/install-qb-deploy.sh)"
+echo "                or install forge-deploy for healthcheck-gated rollouts"
+echo "                  (see scripts/install-forge-deploy.sh)"
 fi
-echo "  DB shell:     docker compose exec qb-engineer-db psql -U postgres -d qb_engineer"
+echo "  DB shell:     docker compose exec forge psql -U postgres -d forge"
 echo ""
 
 # Performance tips for constrained systems

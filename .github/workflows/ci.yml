@@ -1,4 +1,4 @@
-# PR + push CI for qb-engineer-deploy
+# PR + push CI for forge-deploy
 #
 # This repo holds docker-compose, ops scripts, nginx configs.
 # Validation = lint the things we ship: yaml, shell, dockerfiles.

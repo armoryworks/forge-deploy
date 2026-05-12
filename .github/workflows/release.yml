@@ -1,4 +1,4 @@
-# Release workflow for qb-engineer-deploy
+# Release workflow for forge-deploy
 #
 # This repo doesn't ship a Docker image — it ships the compose files and
 # scripts you clone to install the platform. "Releasing" = creating a
@@ -32,15 +32,15 @@ jobs:
         with:
           generate_release_notes: true
           body: |
-            See the [release manifest in the umbrella repo](https://github.com/danielhokanson/qb-engineer/blob/main/release-manifest.md)
-            for the tested combination of qb-engineer-ui and qb-engineer-server image versions
+            See the [release manifest in the umbrella repo](https://github.com/danielhokanson/forge/blob/main/release-manifest.md)
+            for the tested combination of forge-ui and forge-api image versions
             this deploy release pairs with.
 
             ## Install / upgrade
 
             ```bash
-            git clone --branch ${{ github.ref_name }} https://github.com/danielhokanson/qb-engineer-deploy.git
-            cd qb-engineer-deploy
+            git clone --branch ${{ github.ref_name }} https://github.com/danielhokanson/forge-deploy.git
+            cd forge-deploy
             ./setup.sh        # first install
             # or
             ./refresh.sh      # upgrade existing install

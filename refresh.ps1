@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# refresh.ps1 - Pull latest main, rebuild images, and start QB Engineer
+# refresh.ps1 - Pull latest main, rebuild images, and start Forge
 #
 # Usage:
 #   .\refresh.ps1                  # Pull main, rebuild UI + API, start all core services
@@ -17,29 +17,29 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# --- Phase 7: Pi-side guard — qb-deploy supersedes refresh on prod ---
+# --- Phase 7: Pi-side guard — forge-deploy supersedes refresh on prod ---
 #
 # refresh.ps1 is the legacy git-pull-and-rebuild proxy. Phase 6 of the CICD
 # rollout retired it on the Pi: prod now pulls prebuilt GHCR images via
-# qb-deploy (with healthcheck-gated rollback).
+# forge-deploy (with healthcheck-gated rollback).
 #
-# Sentinel: /etc/qb-engineer/deploy-state.json — created by
-# scripts/install-qb-deploy.sh on Pi-style hosts. On Windows workstations
+# Sentinel: /etc/forge/deploy-state.json — created by
+# scripts/install-forge-deploy.sh on Pi-style hosts. On Windows workstations
 # the path is absent and the guard is a no-op (Test-Path returns $false
 # for Linux-style paths), so the local-build dev loop continues to work.
 # PowerShell Core (pwsh) on the Pi would catch the sentinel and abort.
 #
-# See docs/cicd-design.md (Phase 7) and docs/qb-deploy.md.
-if (Test-Path -PathType Leaf '/etc/qb-engineer/deploy-state.json') {
+# See docs/cicd-design.md (Phase 7) and docs/forge-deploy.md.
+if (Test-Path -PathType Leaf '/etc/forge/deploy-state.json') {
     Write-Host "ERROR: refresh.ps1 is the legacy git-pull-and-rebuild proxy, retired on the Pi side." -ForegroundColor Red
-    Write-Host "       This host has qb-deploy installed (state file at /etc/qb-engineer/deploy-state.json)."
+    Write-Host "       This host has forge-deploy installed (state file at /etc/forge/deploy-state.json)."
     Write-Host ""
-    Write-Host "       Use qb-deploy instead (in a bash shell):"
-    Write-Host "         qb-deploy --list --releases # see available semver tags in GHCR"
-    Write-Host "         qb-deploy 1.2.3             # deploy that semver to all services"
-    Write-Host "         qb-deploy --list            # see recent main-<sha> tags (legacy)"
-    Write-Host "         qb-deploy --status          # current deployed tag per service"
-    Write-Host "         qb-deploy --rollback        # revert to prior tag"
+    Write-Host "       Use forge-deploy instead (in a bash shell):"
+    Write-Host "         forge-deploy --list --releases # see available semver tags in GHCR"
+    Write-Host "         forge-deploy 1.2.3             # deploy that semver to all services"
+    Write-Host "         forge-deploy --list            # see recent main-<sha> tags (legacy)"
+    Write-Host "         forge-deploy --status          # current deployed tag per service"
+    Write-Host "         forge-deploy --rollback        # revert to prior tag"
     Write-Host ""
     Write-Host "       refresh.ps1 remains the dev-side dev-loop tool (workstations doing local builds)."
     exit 1
@@ -113,7 +113,7 @@ Write-Ok "Build version: $env:BUILD_VERSION ($env:BUILD_SHA)"
 
 # Write version.json to disk so the dev volume mount picks it up
 $versionJson = '{"version":"' + $env:BUILD_VERSION + '","sha":"' + $env:BUILD_SHA + '"}'
-$versionPath = Join-Path (Get-Location) "qb-engineer-ui\public\assets\version.json"
+$versionPath = Join-Path (Get-Location) "forge-ui\public\assets\version.json"
 Set-Content -Path $versionPath -Value $versionJson -Encoding UTF8 -NoNewline
 Write-Ok "Wrote $versionPath"
 
@@ -126,7 +126,7 @@ Write-Step "Swapping in maintenance page"
 # .env, override YAML, and whatever's actually live.
 $uiPort = ""
 $uiContainerPort = ""
-$uiInspect = docker inspect qb-engineer-ui 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
+$uiInspect = docker inspect forge-ui 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
 if ($uiInspect) {
     $portsObj = $uiInspect[0].NetworkSettings.Ports
     if ($portsObj) {
@@ -151,7 +151,7 @@ if (-not $uiPort) {
     if (Test-Path "docker-compose.override.yml") {
         $overrideContent = Get-Content "docker-compose.override.yml" -Raw -ErrorAction SilentlyContinue
         # Match both quoted "443:443" and unquoted 443:443 YAML forms.
-        if ($overrideContent -match 'qb-engineer-ui[\s\S]*?ports:\s*\n\s*-\s*"?(\d+):\d+"?') {
+        if ($overrideContent -match 'forge-ui[\s\S]*?ports:\s*\n\s*-\s*"?(\d+):\d+"?') {
             $uiPort = $Matches[1]
         }
     }
@@ -178,8 +178,8 @@ if ($uiPort -eq "80" -or $uiPort -eq "443") {
 
 # Stop the real UI first to free the port(s)
 Invoke-Cmd "Stop UI container" {
-    docker compose stop qb-engineer-ui 2>$null
-    docker compose rm -sf qb-engineer-ui 2>$null
+    docker compose stop forge-ui 2>$null
+    docker compose rm -sf forge-ui 2>$null
 }
 
 # Always rebuild the maintenance image — nginx:alpine base is cached and
@@ -188,14 +188,14 @@ Invoke-Cmd "Build maintenance image" {
     docker build -q -t qb-maintenance maintenance/ | Out-Null
 }
 
-# Attach maintenance to the compose network as alias `qb-engineer-ui` so
+# Attach maintenance to the compose network as alias `forge-ui` so
 # reverse proxies that target the container hostname keep resolving during refresh.
-$composeNetwork = (docker network ls --format '{{.Name}}' | Select-String -Pattern '^qb-engineer-wrapper_' | Select-Object -First 1).ToString().Trim()
+$composeNetwork = (docker network ls --format '{{.Name}}' | Select-String -Pattern '^forge-wrapper_' | Select-Object -First 1).ToString().Trim()
 
 function Build-RunArgs([string[]]$portMaps) {
     $args = @("-d", "--name", "qb-maintenance", "--restart", "no")
     if ($composeNetwork) {
-        $args += @("--network", $composeNetwork, "--network-alias", "qb-engineer-ui")
+        $args += @("--network", $composeNetwork, "--network-alias", "forge-ui")
     }
     # Mount the same cert the real UI uses (Cloudflare Origin Cert, Let's
     # Encrypt, etc.) so CF Full-strict and strict reverse proxies accept
@@ -223,23 +223,23 @@ Invoke-Cmd "Start maintenance dragon" {
     }
 }
 Write-Ok ("Maintenance dragon is guarding ports: " + ($maintPortMaps -join ", "))
-if ($composeNetwork) { Write-Ok "  attached to $composeNetwork as qb-engineer-ui" }
+if ($composeNetwork) { Write-Ok "  attached to $composeNetwork as forge-ui" }
 
 # --- Remove remaining app containers (preserve db + storage volumes) ---
 
 Write-Step "Removing app containers"
 Invoke-Cmd "Remove API container" {
-    docker compose rm -sf qb-engineer-api
+    docker compose rm -sf forge-api
 }
 
 # --- Refresh node_modules volume if package.json changed ---
 
 Write-Step "Checking for dependency changes"
-$pkgChanged = git diff 'HEAD@{1}' --name-only 2>$null | Select-String "qb-engineer-ui/package"
+$pkgChanged = git diff 'HEAD@{1}' --name-only 2>$null | Select-String "forge-ui/package"
 if ($pkgChanged) {
     Write-Warn "package.json changed - recreating node_modules volume"
     Invoke-Cmd "Remove ui_node_modules volume" {
-        docker volume rm -f qb-engineer-wrapper_ui_node_modules 2>$null
+        docker volume rm -f forge-wrapper_ui_node_modules 2>$null
     }
 } else {
     Write-Ok "No package.json changes detected"
@@ -249,10 +249,10 @@ if ($pkgChanged) {
 
 Write-Step "Building images (no cache)"
 Invoke-Cmd "Build API" {
-    docker compose build --no-cache qb-engineer-api
+    docker compose build --no-cache forge-api
 }
 Invoke-Cmd "Build UI" {
-    docker compose build --no-cache qb-engineer-ui
+    docker compose build --no-cache forge-ui
 }
 
 # --- Compose up - core services ---
@@ -266,10 +266,10 @@ if ($RecreateDb) {
 
 # Start everything except UI — maintenance container holds the port
 $coreServices = @(
-    "qb-engineer-db",
-    "qb-engineer-storage",
-    "qb-engineer-backup",
-    "qb-engineer-api"
+    "forge",
+    "forge-storage",
+    "forge-backup",
+    "forge-api"
 )
 
 Invoke-Cmd "docker compose up -d (core)" {
@@ -282,7 +282,7 @@ if ($IncludeAi) {
     Write-Step "Starting AI service (Ollama)"
     Write-Warn "First run pulls gemma3:4b + all-minilm:l6-v2 - this can take several minutes"
     Invoke-Cmd "docker compose up -d (AI)" {
-        docker compose --profile ai up -d qb-engineer-ai qb-engineer-ai-init
+        docker compose --profile ai up -d forge-ai forge-ai-init
     }
 } else {
     Write-Warn "Skipping AI service. Add -IncludeAi to include Ollama."
@@ -293,7 +293,7 @@ if ($IncludeAi) {
 if ($IncludeSigning) {
     Write-Step "Starting DocuSeal signing service"
     Invoke-Cmd "docker compose up -d (signing)" {
-        docker compose --profile signing up -d qb-engineer-signing
+        docker compose --profile signing up -d forge-signing
     }
 } else {
     Write-Warn "Skipping signing service. Add -IncludeSigning to include DocuSeal."
@@ -307,7 +307,7 @@ $elapsed = 0
 $healthy = $false
 
 while ($elapsed -lt $maxWait) {
-    $status = docker inspect --format='{{.State.Health.Status}}' qb-engineer-api 2>$null
+    $status = docker inspect --format='{{.State.Health.Status}}' forge-api 2>$null
     if ($status -eq "healthy") {
         $healthy = $true
         break
@@ -321,14 +321,14 @@ while ($elapsed -lt $maxWait) {
 if ($healthy) {
     Write-Ok "API is healthy"
 } else {
-    Write-Warn "API health check timed out after $maxWait s - check logs: docker compose logs -f qb-engineer-api"
+    Write-Warn "API health check timed out after $maxWait s - check logs: docker compose logs -f forge-api"
 }
 
 # --- Swap maintenance container -> real UI ---
 
 Write-Step "Swapping maintenance page for real UI"
 Invoke-Cmd "Remove maintenance container" { docker rm -f qb-maintenance 2>$null }
-Invoke-Cmd "Start real UI" { docker compose up -d --force-recreate qb-engineer-ui }
+Invoke-Cmd "Start real UI" { docker compose up -d --force-recreate forge-ui }
 Write-Ok "Real UI is live — dragon dismissed"
 
 # --- Status ---
@@ -343,9 +343,9 @@ Write-Host "  MinIO:   http://localhost:9001  (minioadmin / minioadmin)" -Foregr
 if ($IncludeAi)      { Write-Host "  Ollama:  http://localhost:11434" -ForegroundColor White }
 if ($IncludeSigning) { Write-Host "  DocuSeal: http://localhost:3000" -ForegroundColor White }
 Write-Host ""
-Write-Host "  Logs:    docker compose logs -f qb-engineer-api" -ForegroundColor DarkGray
+Write-Host "  Logs:    docker compose logs -f forge-api" -ForegroundColor DarkGray
 Write-Host "  Stop:    docker compose stop" -ForegroundColor DarkGray
-Write-Host "  DB CLI:  docker compose exec qb-engineer-db psql -U postgres -d qb_engineer" -ForegroundColor DarkGray
+Write-Host "  DB CLI:  docker compose exec forge psql -U postgres -d forge" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  IMPORTANT: Open http://localhost:4200 and press Ctrl+Shift+R (or Cmd+Shift+R on Mac)" -ForegroundColor Yellow
 Write-Host "             to hard-refresh the browser and pick up the latest UI changes." -ForegroundColor Yellow

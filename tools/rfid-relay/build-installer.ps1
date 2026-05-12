@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Produces dist\rfid-relay-setup.exe — a standard Windows installer that
-    end-users double-click to install the QB Engineer RFID Relay as a
+    end-users double-click to install the Forge RFID Relay as a
     Windows Service with no command-line interaction required.
 
 .EXAMPLE

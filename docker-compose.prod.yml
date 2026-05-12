@@ -1,14 +1,14 @@
 # Production overlay — replaces local `build:` with prebuilt GHCR images.
 #
 # This overlay is meant to be applied on the Pi (production host) on top of
-# the base docker-compose.yml. The qb-deploy CLI does this automatically:
+# the base docker-compose.yml. The forge-deploy CLI does this automatically:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 #
 # Image tags are pinned via .env vars (SERVER_IMAGE_TAG / UI_IMAGE_TAG /
-# TEST_IMAGE_TAG). qb-deploy rewrites those entries on every deploy and
+# TEST_IMAGE_TAG). forge-deploy rewrites those entries on every deploy and
 # rolls them back on healthcheck failure. The default values here are
-# `latest` only because docker compose requires a default — qb-deploy
+# `latest` only because docker compose requires a default — forge-deploy
 # refuses to deploy `latest` and always pins to an immutable tag
 # (main-<sha> or X.Y.Z) before invoking compose.
 #
@@ -19,23 +19,23 @@
 # Local dev keeps the existing build-from-source flow:
 #   docker compose up -d --build
 #
-# See e:/dev/qb-engineer/docs/cicd-design.md for the full CICD design.
+# See e:/dev/forge/docs/cicd-design.md for the full CICD design.
 
 services:
-  qb-engineer-api:
-    image: ghcr.io/danielhokanson/qb-engineer-server:${SERVER_IMAGE_TAG:-latest}
+  forge-api:
+    image: ghcr.io/danielhokanson/forge-api:${SERVER_IMAGE_TAG:-latest}
     build: !reset null
     labels:
-      qb-engineer.deploy-mode: "prod"
+      forge.deploy-mode: "prod"
 
-  qb-engineer-ui:
-    image: ghcr.io/danielhokanson/qb-engineer-ui:${UI_IMAGE_TAG:-latest}
+  forge-ui:
+    image: ghcr.io/danielhokanson/forge-ui:${UI_IMAGE_TAG:-latest}
     build: !reset null
     labels:
-      qb-engineer.deploy-mode: "prod"
+      forge.deploy-mode: "prod"
 
-  qb-engineer-test:
-    image: ghcr.io/danielhokanson/qb-engineer-test:${TEST_IMAGE_TAG:-latest}
+  forge-test:
+    image: ghcr.io/danielhokanson/forge-test:${TEST_IMAGE_TAG:-latest}
     build: !reset null
     labels:
-      qb-engineer.deploy-mode: "prod"
+      forge.deploy-mode: "prod"

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# qb-deploy — Operator-driven deploy CLI for the qb-engineer Pi.
+# forge-deploy — Operator-driven deploy CLI for the forge Pi.
 #
-# Pulls images from ghcr.io/danielhokanson/qb-engineer-{server,ui,test},
+# Pulls images from ghcr.io/danielhokanson/forge-{server,ui,test},
 # pins the operative .env to the chosen tag, and runs the standard
 # docker compose flow with healthcheck-gated rollback.
 #
-# Source of truth: see e:/dev/qb-engineer/docs/cicd-design.md (Phases 3+4).
+# Source of truth: see e:/dev/forge/docs/cicd-design.md (Phases 3+4).
 #
 # Bash conventions:
 #   - set -euo pipefail
@@ -22,11 +22,11 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-readonly QB_DEPLOY_VERSION="0.1.0"
-readonly REPO_ROOT="${QB_DEPLOY_REPO:-/opt/qb-engineer-deploy}"
-readonly STATE_DIR="/etc/qb-engineer"
+readonly FORGE_DEPLOY_VERSION="0.1.0"
+readonly REPO_ROOT="${FORGE_DEPLOY_REPO:-/opt/forge-deploy}"
+readonly STATE_DIR="/etc/forge"
 readonly STATE_FILE="${STATE_DIR}/deploy-state.json"
-readonly LOG_FILE="/var/log/qb-engineer-deploy.log"
+readonly LOG_FILE="/var/log/forge-deploy.log"
 readonly ENV_FILE="${REPO_ROOT}/.env"
 readonly COMPOSE_BASE="${REPO_ROOT}/docker-compose.yml"
 readonly COMPOSE_PROD="${REPO_ROOT}/docker-compose.prod.yml"
@@ -38,9 +38,9 @@ readonly HEALTHCHECK_POLL_INTERVAL=2
 # Service descriptors: service_id|compose_service|image_repo|env_var|healthcheck_kind
 # healthcheck_kind: docker (use container healthcheck) or http:<path> (curl from host)
 readonly SERVICES=(
-  "api|qb-engineer-api|qb-engineer-server|SERVER_IMAGE_TAG|http:/api/v1/health"
-  "ui|qb-engineer-ui|qb-engineer-ui|UI_IMAGE_TAG|docker"
-  "test|qb-engineer-test|qb-engineer-test|TEST_IMAGE_TAG|docker"
+  "api|forge-api|forge-api|SERVER_IMAGE_TAG|http:/api/v1/health"
+  "ui|forge-ui|forge-ui|UI_IMAGE_TAG|docker"
+  "test|forge-test|forge-test|TEST_IMAGE_TAG|docker"
 )
 
 # Tag format regexes
@@ -75,25 +75,25 @@ die()  { err "$1"; exit "${2:-1}"; }
 
 usage() {
   cat <<EOF
-qb-deploy ${QB_DEPLOY_VERSION} — qb-engineer deploy CLI
+forge-deploy ${FORGE_DEPLOY_VERSION} — forge deploy CLI
 
 USAGE:
-  qb-deploy                        Interactive: list last 5 main-<sha> builds, prompt
-  qb-deploy <tag>                  Deploy a specific tag to all services (or with --service)
-  qb-deploy --service <name>       Narrow to one service (api | ui | test | all)
-  qb-deploy --list                 List recent main-<sha> tags in GHCR
-  qb-deploy --list --releases      List <X.Y.Z> semver tags in GHCR
-  qb-deploy --status               Show currently deployed SHA and container health
-  qb-deploy --rollback             Re-pin to the previously deployed tag
-  qb-deploy --logs                 Tail the deploy history log
-  qb-deploy --self-update          git pull qb-engineer-deploy + reinstall
-  qb-deploy --help                 This usage
+  forge-deploy                        Interactive: list last 5 main-<sha> builds, prompt
+  forge-deploy <tag>                  Deploy a specific tag to all services (or with --service)
+  forge-deploy --service <name>       Narrow to one service (api | ui | test | all)
+  forge-deploy --list                 List recent main-<sha> tags in GHCR
+  forge-deploy --list --releases      List <X.Y.Z> semver tags in GHCR
+  forge-deploy --status               Show currently deployed SHA and container health
+  forge-deploy --rollback             Re-pin to the previously deployed tag
+  forge-deploy --logs                 Tail the deploy history log
+  forge-deploy --self-update          git pull forge-deploy + reinstall
+  forge-deploy --help                 This usage
 
 EXAMPLES:
-  qb-deploy main-abc1234                       Deploy that SHA to all services
-  qb-deploy main-abc1234 --service api         Deploy that SHA only to api
-  qb-deploy --service ui                       Pick a tag interactively for ui only
-  qb-deploy 1.2.3                              Deploy a semver release to all
+  forge-deploy main-abc1234                       Deploy that SHA to all services
+  forge-deploy main-abc1234 --service api         Deploy that SHA only to api
+  forge-deploy --service ui                       Pick a tag interactively for ui only
+  forge-deploy 1.2.3                              Deploy a semver release to all
 
 NOTES:
   * Refuses to deploy 'latest' — only immutable tags are accepted.
@@ -144,7 +144,7 @@ all_service_ids() {
 # ─────────────────────────────────────────────────────────────
 
 require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1 (run scripts/install-qb-deploy.sh)"
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1 (run scripts/install-forge-deploy.sh)"
 }
 
 preflight() {
@@ -154,7 +154,7 @@ preflight() {
   docker compose version >/dev/null 2>&1 || die "docker compose plugin missing"
 
   if [[ ! -f "$COMPOSE_BASE" ]]; then
-    die "Base compose file not found: $COMPOSE_BASE (set QB_DEPLOY_REPO?)"
+    die "Base compose file not found: $COMPOSE_BASE (set FORGE_DEPLOY_REPO?)"
   fi
   if [[ ! -f "$COMPOSE_PROD" ]]; then
     die "Prod compose overlay not found: $COMPOSE_PROD"
@@ -163,7 +163,7 @@ preflight() {
     die "Env file not found: $ENV_FILE (run setup.sh first)"
   fi
   if [[ ! -f "$STATE_FILE" ]]; then
-    die "State file not found: $STATE_FILE (run scripts/install-qb-deploy.sh)"
+    die "State file not found: $STATE_FILE (run scripts/install-forge-deploy.sh)"
   fi
   if [[ ! -w "$STATE_FILE" ]]; then
     die "State file not writable: $STATE_FILE"
@@ -180,7 +180,7 @@ preflight() {
 validate_tag() {
   local tag="$1"
   if [[ "$tag" == "latest" ]]; then
-    die "Refusing to deploy 'latest' — pass a main-<sha> or <X.Y.Z> tag (try: qb-deploy --list)"
+    die "Refusing to deploy 'latest' — pass a main-<sha> or <X.Y.Z> tag (try: forge-deploy --list)"
   fi
   if [[ ! "$tag" =~ $TAG_RE_SHA ]] && [[ ! "$tag" =~ $TAG_RE_SEMVER ]]; then
     die "Invalid tag format: '$tag' (expected main-<7-hex> or X.Y.Z)"
@@ -427,10 +427,10 @@ cmd_self_update() {
   fi
   git -C "$REPO_ROOT" pull --ff-only
   ok "Pulled latest"
-  if [[ -x "${REPO_ROOT}/scripts/install-qb-deploy.sh" ]]; then
-    "${REPO_ROOT}/scripts/install-qb-deploy.sh"
+  if [[ -x "${REPO_ROOT}/scripts/install-forge-deploy.sh" ]]; then
+    "${REPO_ROOT}/scripts/install-forge-deploy.sh"
   else
-    warn "install-qb-deploy.sh not found or not executable"
+    warn "install-forge-deploy.sh not found or not executable"
   fi
 }
 
@@ -618,7 +618,7 @@ main() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --help|-h)         usage; exit 0 ;;
-      --version|-V)      printf 'qb-deploy %s\n' "$QB_DEPLOY_VERSION"; exit 0 ;;
+      --version|-V)      printf 'forge-deploy %s\n' "$FORGE_DEPLOY_VERSION"; exit 0 ;;
       --list)            mode="list"; shift ;;
       --releases)        list_releases=true; shift ;;
       --status)          mode="status"; shift ;;

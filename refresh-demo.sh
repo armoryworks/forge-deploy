@@ -16,7 +16,7 @@ ok()    { printf '    \033[32m[OK] %s\033[0m\n' "$1"; }
 warn()  { printf '    \033[33m[!!] %s\033[0m\n' "$1"; }
 fail()  { printf '    \033[31m[X]  %s\033[0m\n' "$1"; }
 
-PROJECT="qb-engineer-demo"
+PROJECT="forge-demo"
 COMPOSE_FILE="docker-compose.demo.yml"
 
 if [[ ! -f "$COMPOSE_FILE" ]]; then
@@ -47,7 +47,7 @@ if [[ "$STATUS" != "healthy" ]]; then
     warn "Check: docker compose -p $PROJECT -f $COMPOSE_FILE logs"
 fi
 
-HOST_PORT=$(docker compose -p "$PROJECT" -f "$COMPOSE_FILE" port qb-engineer-demo 80 2>/dev/null | sed 's/.*://')
+HOST_PORT=$(docker compose -p "$PROJECT" -f "$COMPOSE_FILE" port forge-demo 80 2>/dev/null | sed 's/.*://')
 
 step "Done"
 if [[ -n "${HOST_PORT:-}" ]]; then

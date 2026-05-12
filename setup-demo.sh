@@ -63,7 +63,7 @@ confirm() {
     [[ -z "$answer" || "$answer" =~ ^[Yy] ]]
 }
 
-PROJECT="qb-engineer-demo"
+PROJECT="forge-demo"
 COMPOSE_FILE="docker-compose.demo.yml"
 
 if [[ ! -f "$COMPOSE_FILE" ]]; then
@@ -108,7 +108,7 @@ if ! $TUNNEL_ONLY; then
         warn "Check: docker compose -p $PROJECT -f $COMPOSE_FILE logs"
     fi
 
-    HOST_PORT=$(docker compose -p "$PROJECT" -f "$COMPOSE_FILE" port qb-engineer-demo 80 2>/dev/null | sed 's/.*://')
+    HOST_PORT=$(docker compose -p "$PROJECT" -f "$COMPOSE_FILE" port forge-demo 80 2>/dev/null | sed 's/.*://')
     if [[ -n "${HOST_PORT:-}" ]]; then
         ok "Demo serving on http://localhost:${HOST_PORT}/"
     fi
@@ -187,7 +187,7 @@ if [[ -z "$SUBDOMAIN" ]]; then
     exit 1
 fi
 
-ask "Tunnel name" "qb-engineer-demo"
+ask "Tunnel name" "forge-demo"
 TUNNEL_NAME="$REPLY"
 
 ask "Host port the demo container binds (leave as-is unless you changed it)" "${HOST_PORT:-4203}"

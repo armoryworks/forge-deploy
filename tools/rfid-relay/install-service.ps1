@@ -1,11 +1,11 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Installs the QB Engineer RFID Relay as a Windows Service that starts automatically at boot.
+    Installs the Forge RFID Relay as a Windows Service that starts automatically at boot.
 
 .DESCRIPTION
     Publishes pcsc-relay as a self-contained win-x64 executable, installs it as a
-    Windows Service named "QbEngineerRfidRelay", and starts it immediately.
+    Windows Service named "ForgeRfidRelay", and starts it immediately.
 
     The service runs as LocalSystem and restarts automatically on failure.
 
@@ -16,7 +16,7 @@
     Debounce window in milliseconds to suppress duplicate scans. Default: 500.
 
 .PARAMETER InstallDir
-    Directory to publish the executable to. Default: C:\Program Files\QB Engineer\RfidRelay
+    Directory to publish the executable to. Default: C:\Program Files\Forge\RfidRelay
 
 .EXAMPLE
     .\install-service.ps1
@@ -27,15 +27,15 @@
 param(
     [int]    $Port        = 9876,
     [int]    $DebounceMs  = 500,
-    [string] $InstallDir  = "C:\Program Files\QB Engineer\RfidRelay"
+    [string] $InstallDir  = "C:\Program Files\Forge\RfidRelay"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$ServiceName    = "QbEngineerRfidRelay"
-$DisplayName    = "QB Engineer RFID Relay"
-$Description    = "Bridges USB NFC/RFID smart card readers to the QB Engineer browser app via WebSocket."
+$ServiceName    = "ForgeRfidRelay"
+$DisplayName    = "Forge RFID Relay"
+$Description    = "Bridges USB NFC/RFID smart card readers to the Forge browser app via WebSocket."
 $ExeName        = "pcsc-relay.exe"
 $ProjectDir     = Join-Path $PSScriptRoot "pcsc-relay"
 
@@ -155,7 +155,7 @@ if ($svc.Status -eq 'Running') {
 
 Write-Host ""
 Write-Host "================================================================" -ForegroundColor Green
-Write-Host "  QB Engineer RFID Relay installed and running!" -ForegroundColor Green
+Write-Host "  Forge RFID Relay installed and running!" -ForegroundColor Green
 Write-Host "  WebSocket:  ws://localhost:$Port" -ForegroundColor Green
 Write-Host "  Service:    $ServiceName" -ForegroundColor Green
 Write-Host "  Executable: $destExe" -ForegroundColor Green

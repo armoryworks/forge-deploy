@@ -1,4 +1,4 @@
-# Co-host overlay — when qb-engineer runs behind a host-level reverse proxy.
+# Co-host overlay — when forge runs behind a host-level reverse proxy.
 #
 # Activated automatically by setup.sh / refresh.sh when QBE_HOSTING_MODE=cohost
 # in .env, or when --cohost is passed. The scripts append this file to
@@ -6,7 +6,7 @@
 #
 # Use this mode when:
 #   - An outer nginx / Caddy on the host terminates TLS and proxies to
-#     127.0.0.1:4200 (qb-engineer-ui), and/or
+#     127.0.0.1:4200 (forge-ui), and/or
 #   - A Cloudflare Tunnel (cloudflared) routes a hostname to 127.0.0.1:4200.
 #
 # The base docker-compose.yml already binds all services to 127.0.0.1 by
@@ -17,10 +17,10 @@
 # See docs/cohosting.md for the full setup walkthrough.
 
 services:
-  qb-engineer-ui:
+  forge-ui:
     labels:
-      qb-engineer.hosting-mode: "cohost"
+      forge.hosting-mode: "cohost"
 
-  qb-engineer-api:
+  forge-api:
     labels:
-      qb-engineer.hosting-mode: "cohost"
+      forge.hosting-mode: "cohost"

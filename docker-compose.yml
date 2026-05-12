@@ -1,20 +1,20 @@
 services:
-  qb-engineer-ui:
-    # Build context is the qb-engineer-ui repo root (sibling of this deploy
+  forge-ui:
+    # Build context is the forge-ui repo root (sibling of this deploy
     # repo on the dev workstation). On the Pi / GHCR-pull path this service
     # is sourced via docker-compose.prod.yml (image: from GHCR); the build:
     # block here is for local dev (`./setup.sh --source`) and CI build
     # verification.
     build:
-      context: ../qb-engineer-ui
+      context: ../forge-ui
       args:
         BUILD_VERSION: ${BUILD_VERSION:-0}
         BUILD_SHA: ${BUILD_SHA:-dev}
-    container_name: qb-engineer-ui
+    container_name: forge-ui
     ports:
       - "${UI_BIND:-127.0.0.1}:${UI_PORT:-4200}:80"
     depends_on:
-      qb-engineer-api:
+      forge-api:
         condition: service_started
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/"]
@@ -28,17 +28,17 @@ services:
           memory: 256M
     restart: unless-stopped
 
-  qb-engineer-test:
-    # Public-facing test/demo SPA (qb-engineer-test repo, test-bed/).
-    # Build context is the qb-engineer-test repo root (sibling of this
+  forge-test:
+    # Public-facing test/demo SPA (forge-test repo, test-bed/).
+    # Build context is the forge-test repo root (sibling of this
     # deploy repo on the dev workstation) because the Angular build's
     # content-compile step reads from <repo>/docs/. On the Pi this
     # service is sourced via docker-compose.prod.yml (image: from GHCR);
     # the build: block here is for local dev / CI build verification.
     build:
-      context: ../qb-engineer-test
+      context: ../forge-test
       dockerfile: test-bed/Dockerfile
-    container_name: qb-engineer-test
+    container_name: forge-test
     ports:
       - "${TEST_BIND:-127.0.0.1}:${TEST_PORT:-4300}:80"
     healthcheck:
@@ -55,16 +55,16 @@ services:
       - test
     restart: unless-stopped
 
-  qb-engineer-api:
-    # Build context is the qb-engineer-server repo root (sibling of this
+  forge-api:
+    # Build context is the forge-api repo root (sibling of this
     # deploy repo on the dev workstation). On the Pi / GHCR-pull path this
     # service is sourced via docker-compose.prod.yml (image: from GHCR); the
     # build: block here is for local dev (`./setup.sh --source`) and CI
     # build verification.
     build:
-      context: ../qb-engineer-server
-      dockerfile: qb-engineer.api/Dockerfile
-    container_name: qb-engineer-api
+      context: ../forge-api
+      dockerfile: forge.api/Dockerfile
+    container_name: forge-api
     ports:
       - "${API_BIND:-127.0.0.1}:${API_PORT:-5000}:8080"
     environment:
@@ -72,11 +72,11 @@ services:
       - RECREATE_DB=${RECREATE_DB:-false}
       - SEED_DEMO_DATA=${SEED_DEMO_DATA:-false}
       - SEED_USER_PASSWORD=${SEED_USER_PASSWORD:-}
-      - ConnectionStrings__DefaultConnection=Host=qb-engineer-db;Port=5432;Database=${POSTGRES_DB:-qb_engineer};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
+      - ConnectionStrings__DefaultConnection=Host=forge;Port=5432;Database=${POSTGRES_DB:-forge};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
       - Jwt__Key=${JWT_KEY:-dev-secret-key-change-in-production-min-32-chars!!}
-      - Jwt__Issuer=${JWT_ISSUER:-qb-engineer}
-      - Jwt__Audience=${JWT_AUDIENCE:-qb-engineer-ui}
-      - Minio__Endpoint=qb-engineer-storage:9000
+      - Jwt__Issuer=${JWT_ISSUER:-forge}
+      - Jwt__Audience=${JWT_AUDIENCE:-forge-ui}
+      - Minio__Endpoint=forge-storage:9000
       - Minio__PublicEndpoint=${MINIO_PUBLIC_ENDPOINT:-localhost:9000}
       - Minio__AccessKey=${MINIO_ROOT_USER:-minioadmin}
       - Minio__SecretKey=${MINIO_ROOT_PASSWORD:-minioadmin}
@@ -88,13 +88,13 @@ services:
       - LocalStorage__PresignedUrlExpirySeconds=${LOCAL_STORAGE_URL_EXPIRY:-3600}
       - Usps__ConsumerKey=${USPS_CONSUMER_KEY:-}
       - Usps__ConsumerSecret=${USPS_CONSUMER_SECRET:-}
-      - Ai__BaseUrl=${AI_BASE_URL:-http://qb-engineer-ai:11434}
+      - Ai__BaseUrl=${AI_BASE_URL:-http://forge-ai:11434}
       - Ai__Model=${AI_MODEL:-gemma3:4b}
       - Ai__EmbeddingModel=${AI_EMBEDDING_MODEL:-all-minilm:l6-v2}
       - Ai__DocsPath=/app/docs
       - FrontendBaseUrl=${FRONTEND_BASE_URL:-http://localhost:4200}
-      - FormRendererBaseUrl=${FORM_RENDERER_BASE_URL:-http://qb-engineer-ui:80}
-      - DocuSeal__BaseUrl=${DOCUSEAL_BASE_URL:-http://qb-engineer-signing:3000}
+      - FormRendererBaseUrl=${FORM_RENDERER_BASE_URL:-http://forge-ui:80}
+      - DocuSeal__BaseUrl=${DOCUSEAL_BASE_URL:-http://forge-signing:3000}
       - DocuSeal__PublicBaseUrl=${DOCUSEAL_PUBLIC_BASE_URL:-${FRONTEND_BASE_URL:-http://localhost:4200}/docuseal}
       - DocuSeal__ApiKey=${DOCUSEAL_API_KEY:-}
       - DocuSeal__TimeoutSeconds=${DOCUSEAL_TIMEOUT:-30}
@@ -114,9 +114,9 @@ services:
       - ${LOCAL_STORAGE_PATH:-./storage}:/app/storage
       - ./tools:/app/tools:ro
     depends_on:
-      qb-engineer-db:
+      forge:
         condition: service_healthy
-      qb-engineer-storage:
+      forge-storage:
         condition: service_started
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
@@ -130,19 +130,19 @@ services:
           memory: 2G
     restart: unless-stopped
 
-  qb-engineer-db:
+  forge:
     image: pgvector/pgvector:pg17
-    container_name: qb-engineer-db
+    container_name: forge
     ports:
       - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     environment:
-      - POSTGRES_DB=${POSTGRES_DB:-qb_engineer}
+      - POSTGRES_DB=${POSTGRES_DB:-forge}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-qb_engineer}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-forge}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -152,9 +152,9 @@ services:
           memory: 1G
     restart: unless-stopped
 
-  qb-engineer-storage:
+  forge-storage:
     image: minio/minio
-    container_name: qb-engineer-storage
+    container_name: forge-storage
     ports:
       - "${MINIO_BIND:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
       - "${MINIO_BIND:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
@@ -166,15 +166,15 @@ services:
     command: server /data --console-address ":9001"
     restart: unless-stopped
 
-  qb-engineer-backup:
+  forge-backup:
     image: alpine:3.19
-    container_name: qb-engineer-backup
+    container_name: forge-backup
     command: ["sh", "-c", "echo 'Backup container placeholder' && sleep infinity"]
     restart: unless-stopped
 
-  qb-engineer-ai:
+  forge-ai:
     image: ollama/ollama
-    container_name: qb-engineer-ai
+    container_name: forge-ai
     ports:
       - "${AI_BIND:-127.0.0.1}:${AI_PORT:-11434}:11434"
     volumes:
@@ -193,24 +193,24 @@ services:
           memory: 6G
     restart: unless-stopped
 
-  qb-engineer-ai-init:
+  forge-ai-init:
     image: ollama/ollama
-    container_name: qb-engineer-ai-init
+    container_name: forge-ai-init
     entrypoint: ["/bin/sh", "-c"]
     command: >
       "ollama pull gemma3:4b && ollama pull all-minilm:l6-v2 && echo 'AI model init complete'"
     environment:
-      - OLLAMA_HOST=http://qb-engineer-ai:11434
+      - OLLAMA_HOST=http://forge-ai:11434
     depends_on:
-      qb-engineer-ai:
+      forge-ai:
         condition: service_healthy
     profiles:
       - ai
     restart: "no"
 
-  qb-engineer-tts:
+  forge-tts:
     image: ghcr.io/coqui-ai/tts-cpu:latest
-    container_name: qb-engineer-tts
+    container_name: forge-tts
     ports:
       - "${TTS_BIND:-127.0.0.1}:${TTS_PORT:-5002}:5002"
     volumes:
@@ -226,9 +226,9 @@ services:
           memory: 2G
     restart: unless-stopped
 
-  qb-engineer-logs:
+  forge-logs:
     image: datalust/seq:latest
-    container_name: qb-engineer-logs
+    container_name: forge-logs
     environment:
       - ACCEPT_EULA=Y
       - SEQ_PATHBASE=/logs
@@ -244,9 +244,9 @@ services:
           memory: 512M
     restart: unless-stopped
 
-  qb-engineer-signing:
+  forge-signing:
     image: docuseal/docuseal:latest
-    container_name: qb-engineer-signing
+    container_name: forge-signing
     ports:
       - "${DOCUSEAL_BIND:-127.0.0.1}:${DOCUSEAL_PORT:-3000}:3000"
     volumes:

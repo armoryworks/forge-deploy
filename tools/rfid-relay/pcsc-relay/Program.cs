@@ -32,7 +32,7 @@ builder.Logging.SetMinimumLevel(Microsoft.Extensions.Logging.LogLevel.Warning);
 if (OperatingSystem.IsWindows())
 {
     builder.Services.AddWindowsService(options =>
-        options.ServiceName = "QB Engineer RFID Relay");
+        options.ServiceName = "Forge RFID Relay");
 }
 
 builder.Services.AddSingleton(new RelayOptions(port, debounceMs));

@@ -15,8 +15,8 @@ for (let i = 0; i < args.length; i++) {
 }
 
 const svc = new Service({
-  name: 'QB Engineer RFID Relay',
-  description: `Bridges USB NFC/RFID readers to the QB Engineer browser app via WebSocket (ws://localhost:${port}).`,
+  name: 'Forge RFID Relay',
+  description: `Bridges USB NFC/RFID readers to the Forge browser app via WebSocket (ws://localhost:${port}).`,
   script: resolve('relay.js'),
   scriptOptions: `--port ${port} --debounce ${debounceMs}`,
   nodeOptions: [],

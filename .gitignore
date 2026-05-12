@@ -1,5 +1,5 @@
-# Operator-managed files — created by setup.sh / qb-deploy on each install.
-# Tracking these caused a recurring "qb-deploy --self-update refuses to pull"
+# Operator-managed files — created by setup.sh / forge-deploy on each install.
+# Tracking these caused a recurring "forge-deploy --self-update refuses to pull"
 # papercut on the Pi (git status --porcelain flagged them as dirty).
 .env
 docker-compose.override.yml

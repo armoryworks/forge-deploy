@@ -1,7 +1,7 @@
 # Orchestrates the disposable export stack (Windows / PowerShell variant).
 #
 # Stands up a throwaway Postgres + API from docker-compose.export.yml, the API
-# seeds itself + dumps business entities to .\qb-engineer-ui\public\demo-data\
+# seeds itself + dumps business entities to .\forge-ui\public\demo-data\
 # and exits. This script then tears the stack down (including volumes) so
 # nothing lingers. The dev stack is untouched.
 
@@ -10,7 +10,7 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
-$OutDir = "qb-engineer-ui\public\demo-data"
+$OutDir = "forge-ui\public\demo-data"
 $ComposeFile = "docker-compose.export.yml"
 
 Write-Host "[export] Cleaning previous demo-data output..."
@@ -22,7 +22,7 @@ if (Test-Path $OutDir) {
 
 try {
     Write-Host "[export] Building + running export stack (this can take a few minutes on first run)..."
-    docker compose -p qb-engineer-export -f $ComposeFile up --build --abort-on-container-exit --exit-code-from qb-engineer-api-export
+    docker compose -p forge-export -f $ComposeFile up --build --abort-on-container-exit --exit-code-from forge-api-export
     $ExitCode = $LASTEXITCODE
 
     if ($ExitCode -ne 0) {
@@ -35,5 +35,5 @@ try {
 }
 finally {
     Write-Host "[export] Tearing down export stack..."
-    docker compose -p qb-engineer-export -f $ComposeFile down -v --remove-orphans 2>&1 | Out-Null
+    docker compose -p forge-export -f $ComposeFile down -v --remove-orphans 2>&1 | Out-Null
 }

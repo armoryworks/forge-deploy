@@ -5,7 +5,7 @@ import { Service } from 'node-windows';
 import { resolve } from 'path';
 
 const svc = new Service({
-  name: 'QB Engineer RFID Relay',
+  name: 'Forge RFID Relay',
   script: resolve('relay.js'),
 });
 

@@ -1,4 +1,4 @@
-# Dependabot config for qb-engineer-deploy
+# Dependabot config for forge-deploy
 #
 # This repo doesn't have npm or nuget — just Docker base images and
 # GitHub Actions. Both are still worth tracking for security patches.

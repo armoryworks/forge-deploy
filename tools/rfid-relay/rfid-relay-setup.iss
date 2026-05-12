@@ -1,4 +1,4 @@
-; QB Engineer RFID Relay — Inno Setup Script
+; Forge RFID Relay — Inno Setup Script
 ; Produces: rfid-relay-setup.exe
 ;
 ; Prerequisites:
@@ -6,7 +6,7 @@
 ;   2. Inno Setup 6+ installed (https://jrsoftware.org/isinfo.php)
 ;      or run via CI with `iscc rfid-relay-setup.iss`
 
-#define AppName      "QB Engineer RFID Relay"
+#define AppName      "Forge RFID Relay"
 #define AppVersion   "1.0.0"
 #define ServiceName  "QbEngineerRfidRelay"
 #define ExeName      "pcsc-relay.exe"
@@ -16,9 +16,9 @@
 AppId={{A3F7B2C1-8D4E-4F6A-9B0C-1E2D3C4A5B6F}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppPublisher=QB Engineer
-DefaultDirName={commonpf64}\QB Engineer\RfidRelay
-DefaultGroupName=QB Engineer
+AppPublisher=Forge
+DefaultDirName={commonpf64}\Forge\RfidRelay
+DefaultGroupName=Forge
 OutputDir=dist
 OutputBaseFilename=rfid-relay-setup
 Compression=lzma2/ultra64
@@ -51,7 +51,7 @@ Filename: "sc.exe"; Parameters: "create ""{#ServiceName}"" \
   binPath= """"""{app}\{#ExeName}"""" --port 9876 --debounce 500"" \
   DisplayName= ""{#AppName}"" \
   start= auto \
-  description= ""Bridges USB NFC/RFID smart card readers to QB Engineer via WebSocket."""; \
+  description= ""Bridges USB NFC/RFID smart card readers to Forge via WebSocket."""; \
   Flags: runhidden; StatusMsg: "Installing service..."
 
 ; Configure auto-restart on failure (reset after 1 day; restart after 5s, 10s, 30s)
