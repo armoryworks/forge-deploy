@@ -8,7 +8,7 @@
 
 #define AppName      "Forge RFID Relay"
 #define AppVersion   "1.0.0"
-#define ServiceName  "QbEngineerRfidRelay"
+#define ServiceName  "ForgeRfidRelay"
 #define ExeName      "pcsc-relay.exe"
 #define PublishDir   "publish\win-x64"
 
