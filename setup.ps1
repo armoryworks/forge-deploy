@@ -364,7 +364,7 @@ if (-not (Test-Path "docker-compose.yml")) {
 if (-not (Test-Path ".env.example")) {
     Write-Fail ".env.example not found — the repo may be incomplete."
     Write-Instruction "Try a fresh clone:"
-    Write-Instruction "  git clone https://github.com/danielhokanson/forge-wrapper.git"
+    Write-Instruction "  git clone https://github.com/armoryworks/forge-deploy.git"
     exit 1
 }
 

@@ -23,19 +23,19 @@
 
 services:
   forge-api:
-    image: ghcr.io/danielhokanson/forge-api:${SERVER_IMAGE_TAG:-latest}
+    image: ghcr.io/armoryworks/forge-api:${SERVER_IMAGE_TAG:-latest}
     build: !reset null
     labels:
       forge.deploy-mode: "prod"
 
   forge-ui:
-    image: ghcr.io/danielhokanson/forge-ui:${UI_IMAGE_TAG:-latest}
+    image: ghcr.io/armoryworks/forge-ui:${UI_IMAGE_TAG:-latest}
     build: !reset null
     labels:
       forge.deploy-mode: "prod"
 
   forge-test:
-    image: ghcr.io/danielhokanson/forge-test:${TEST_IMAGE_TAG:-latest}
+    image: ghcr.io/armoryworks/forge-test:${TEST_IMAGE_TAG:-latest}
     build: !reset null
     labels:
       forge.deploy-mode: "prod"
