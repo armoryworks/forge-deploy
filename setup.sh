@@ -4,7 +4,7 @@
 # Two paths:
 #
 #   ./setup.sh                 # default: GHCR-pull. Pulls prebuilt images
-#                              # from ghcr.io/danielhokanson/forge-{server,ui,test}
+#                              # from ghcr.io/armoryworks/forge-{server,ui,test}
 #                              # and brings the stack up. Requires only this
 #                              # repo (forge-deploy) cloned. This is
 #                              # the production / tester path.
@@ -714,7 +714,7 @@ fi
 if [[ ! -f ".env.example" ]]; then
     fail ".env.example not found — the repo may be incomplete."
     info "Try a fresh clone:"
-    info "  git clone https://github.com/danielhokanson/forge-deploy.git"
+    info "  git clone https://github.com/armoryworks/forge-deploy.git"
     exit 1
 fi
 
@@ -759,7 +759,7 @@ if $SOURCE_BUILD; then
         if [[ "$yn" =~ ^[Yy]$ ]]; then
             for sib in "${MISSING_SIBLINGS[@]}"; do
                 step "  Cloning ${sib}"
-                if ! git -C "$PARENT_DIR" clone "https://github.com/danielhokanson/${sib}.git"; then
+                if ! git -C "$PARENT_DIR" clone "https://github.com/armoryworks/${sib}.git"; then
                     fail "git clone failed for ${sib}"
                     info "Clone manually then re-run ./setup.sh --source"
                     exit 1
@@ -770,7 +770,7 @@ if $SOURCE_BUILD; then
             echo ""
             info "Option B — clone them yourself, then re-run:"
             for sib in "${MISSING_SIBLINGS[@]}"; do
-                info "  git -C ${PARENT_DIR} clone https://github.com/danielhokanson/${sib}.git"
+                info "  git -C ${PARENT_DIR} clone https://github.com/armoryworks/${sib}.git"
             done
             echo ""
             info "Or skip --source and use the default GHCR-pull path:"

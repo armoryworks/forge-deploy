@@ -32,14 +32,14 @@ jobs:
         with:
           generate_release_notes: true
           body: |
-            See the [release manifest in the umbrella repo](https://github.com/danielhokanson/forge/blob/main/release-manifest.md)
+            See the [release manifest in the umbrella repo](https://github.com/armoryworks/forge/blob/main/release-manifest.md)
             for the tested combination of forge-ui and forge-api image versions
             this deploy release pairs with.
 
             ## Install / upgrade
 
             ```bash
-            git clone --branch ${{ github.ref_name }} https://github.com/danielhokanson/forge-deploy.git
+            git clone --branch ${{ github.ref_name }} https://github.com/armoryworks/forge-deploy.git
             cd forge-deploy
             ./setup.sh        # first install
             # or

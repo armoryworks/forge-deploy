@@ -2,7 +2,7 @@
 
 For project-wide guidelines (branch model, PR conventions), see the
 umbrella repo:
-**https://github.com/danielhokanson/forge/blob/main/CONTRIBUTING.md**
+**https://github.com/armoryworks/forge/blob/main/CONTRIBUTING.md**
 
 This repo is the operator-facing surface. PRs here change how the
 platform is installed, configured, and upgraded — keep that audience in
@@ -34,12 +34,12 @@ mind.
 
 ### Production / tester path (default — GHCR-pull)
 
-Pulls prebuilt images from `ghcr.io/danielhokanson/forge-{server,ui,test}`.
+Pulls prebuilt images from `ghcr.io/armoryworks/forge-{server,ui,test}`.
 Multi-arch images cover `linux/amd64` and `linux/arm64`, so x86_64 and arm64
 hosts both work. **No source code required.**
 
 ```bash
-git clone https://github.com/danielhokanson/forge-deploy.git
+git clone https://github.com/armoryworks/forge-deploy.git
 cd forge-deploy
 ./setup.sh                  # creates .env, pulls images, brings up the stack
 ```
@@ -57,10 +57,10 @@ hacking on `forge-api`, `forge-ui`, or `forge-test`.
 ```bash
 # All four repos as siblings under a master folder:
 mkdir forge && cd forge
-git clone https://github.com/danielhokanson/forge-api.git
-git clone https://github.com/danielhokanson/forge-ui.git
-git clone https://github.com/danielhokanson/forge-test.git
-git clone https://github.com/danielhokanson/forge-deploy.git
+git clone https://github.com/armoryworks/forge-api.git
+git clone https://github.com/armoryworks/forge-ui.git
+git clone https://github.com/armoryworks/forge-test.git
+git clone https://github.com/armoryworks/forge-deploy.git
 
 cd forge-deploy
 ./setup.sh --source         # builds locally, brings up the stack
@@ -140,7 +140,7 @@ compose file + scripts at that tag. Workflow:
    and `forge-test` in `docker-compose.yml`.
 2. Tag `vX.Y.Z` from `main` and push. `release.yml` creates a GitHub
    release with auto-generated notes.
-3. Update [release-manifest.md in the umbrella repo](https://github.com/danielhokanson/forge/blob/main/release-manifest.md)
+3. Update [release-manifest.md in the umbrella repo](https://github.com/armoryworks/forge/blob/main/release-manifest.md)
    to record the bundle.
 
 ### Sibling image repos — auto-bumped semver
@@ -188,7 +188,7 @@ lexicographically in the right order, and let `forge-deploy --list
 --releases` surface a meaningful list. Patches auto-increment because
 the operator shouldn't have to edit a file for every commit.
 
-See [docs/cicd-design.md §Phase 8 addendum](https://github.com/danielhokanson/forge/blob/main/docs/cicd-design.md)
+See [docs/cicd-design.md §Phase 8 addendum](https://github.com/armoryworks/forge/blob/main/docs/cicd-design.md)
 for the design background and the matrix-split + Node 24 details.
 
 ## Operator deploys on the Pi

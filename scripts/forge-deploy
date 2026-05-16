@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # forge-deploy — Operator-driven deploy CLI for the forge Pi.
 #
-# Pulls images from ghcr.io/danielhokanson/forge-{server,ui,test},
+# Pulls images from ghcr.io/armoryworks/forge-{server,ui,test},
 # pins the operative .env to the chosen tag, and runs the standard
 # docker compose flow with healthcheck-gated rollback.
 #
@@ -31,7 +31,7 @@ readonly ENV_FILE="${REPO_ROOT}/.env"
 readonly COMPOSE_BASE="${REPO_ROOT}/docker-compose.yml"
 readonly COMPOSE_PROD="${REPO_ROOT}/docker-compose.prod.yml"
 readonly REGISTRY_HOST="ghcr.io"
-readonly REGISTRY_OWNER="danielhokanson"
+readonly REGISTRY_OWNER="armoryworks"
 readonly HEALTHCHECK_TIMEOUT_SECS=60
 readonly HEALTHCHECK_POLL_INTERVAL=2
 
