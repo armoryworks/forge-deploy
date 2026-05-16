@@ -900,7 +900,7 @@ set_env "QBE_HOSTING_MODE" "$HOSTING_MODE"
 if $IS_COHOST; then
     # Remove any stale 0.0.0.0 binds from a previous standalone run so
     # the compose-level 127.0.0.1 default takes over.
-    for v in UI_BIND API_BIND POSTGRES_BIND MINIO_BIND AI_BIND TTS_BIND DOCUSEAL_BIND DEMO_BIND; do
+    for v in UI_BIND API_BIND TEST_BIND POSTGRES_BIND MINIO_BIND AI_BIND TTS_BIND DOCUSEAL_BIND DEMO_BIND; do
         if grep -q "^${v}=" .env 2>/dev/null; then
             sed -i "/^${v}=/d" .env
         fi
@@ -908,6 +908,7 @@ if $IS_COHOST; then
 else
     set_env "UI_BIND" "0.0.0.0"
     set_env "API_BIND" "0.0.0.0"
+    set_env "TEST_BIND" "0.0.0.0"
     set_env "POSTGRES_BIND" "0.0.0.0"
     set_env "MINIO_BIND" "0.0.0.0"
     set_env "AI_BIND" "0.0.0.0"
