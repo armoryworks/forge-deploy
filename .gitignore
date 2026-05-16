@@ -8,6 +8,7 @@ setup-public-rollback.sh
 # Operator-managed runtime data (bind-mount targets).
 storage/
 keys/
+backups/
 
 # OS junk
 .DS_Store

@@ -167,10 +167,30 @@ services:
     restart: unless-stopped
 
   forge-backup:
-    image: alpine:3.19
+    build:
+      context: ./backup
     container_name: forge-backup
-    command: ["sh", "-c", "echo 'Backup container placeholder' && sleep infinity"]
     restart: unless-stopped
+    environment:
+      - BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-0 2 * * *}
+      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-30}
+      - BACKUP_RUN_ON_START=${BACKUP_RUN_ON_START:-false}
+      - POSTGRES_HOST=forge
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-forge_db}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - MINIO_HOST=forge-storage
+      - MINIO_PORT=9000
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      forge:
+        condition: service_healthy
+      forge-storage:
+        condition: service_healthy
 
   forge-ai:
     image: ollama/ollama
