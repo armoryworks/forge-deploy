@@ -10,6 +10,13 @@ storage/
 keys/
 backups/
 
+# Build artifacts — .NET (tools/rfid-relay/pcsc-relay) + future projects.
+bin/
+obj/
+
+# Node — tools/rfid-relay
+node_modules/
+
 # OS junk
 .DS_Store
 Thumbs.db
