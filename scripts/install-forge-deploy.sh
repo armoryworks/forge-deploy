@@ -158,6 +158,35 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────
+# Optional GHCR credentials (only needed while packages are private)
+# ─────────────────────────────────────────────────────────────
+#
+# forge-deploy resolves public images anonymously. If the org keeps the
+# forge-* container packages private, it needs a PAT with read:packages.
+# Pass it non-interactively to store it here:
+#
+#   sudo GHCR_USER=<gh-login> GHCR_TOKEN=ghp_xxx ./scripts/install-forge-deploy.sh
+#
+# No prompt — if the env vars aren't set we skip silently so the installer
+# never blocks on stdin during an unattended run.
+
+if [[ -n "${GHCR_USER:-}" && -n "${GHCR_TOKEN:-}" ]]; then
+  step "Storing GHCR credentials"
+  printf '%s' "$GHCR_USER"  > "${STATE_DIR}/ghcr-user"
+  printf '%s' "$GHCR_TOKEN" > "${STATE_DIR}/ghcr-token"
+  chown "${DEPLOY_USER}:${DEPLOY_GROUP}" "${STATE_DIR}/ghcr-user" "${STATE_DIR}/ghcr-token"
+  chmod 0640 "${STATE_DIR}/ghcr-user"
+  chmod 0600 "${STATE_DIR}/ghcr-token"
+  ok "Saved ${STATE_DIR}/ghcr-user (0640) + ghcr-token (0600)"
+  # Also log Docker in so `docker compose pull` can fetch private images.
+  if printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null 2>&1; then
+    ok "docker login ghcr.io succeeded"
+  else
+    warn "docker login ghcr.io failed — check the PAT's read:packages scope"
+  fi
+fi
+
+# ─────────────────────────────────────────────────────────────
 # Done
 # ─────────────────────────────────────────────────────────────
 

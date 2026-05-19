@@ -22,7 +22,7 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-readonly FORGE_DEPLOY_VERSION="0.1.0"
+readonly FORGE_DEPLOY_VERSION="0.2.0"
 readonly REPO_ROOT="${FORGE_DEPLOY_REPO:-/opt/forge-deploy}"
 readonly STATE_DIR="/etc/forge"
 readonly STATE_FILE="${STATE_DIR}/deploy-state.json"
@@ -81,8 +81,9 @@ USAGE:
   forge-deploy                        Interactive: list last 5 main-<sha> builds, prompt
   forge-deploy <tag>                  Deploy a specific tag to all services (or with --service)
   forge-deploy --service <name>       Narrow to one service (api | ui | test | all)
-  forge-deploy --list                 List recent main-<sha> tags in GHCR
-  forge-deploy --list --releases      List <X.Y.Z> semver tags in GHCR
+  forge-deploy --list                 List recent versions paired with their build-sha
+  forge-deploy --list --releases      List <X.Y.Z> semver tags only
+  forge-deploy --list --builds        List main-<sha> build tags only
   forge-deploy --status               Show currently deployed SHA and container health
   forge-deploy --rollback             Re-pin to the previously deployed tag
   forge-deploy --logs                 Tail the deploy history log
@@ -96,6 +97,10 @@ EXAMPLES:
   forge-deploy 1.2.3                              Deploy a semver release to all
 
 NOTES:
+  * Default --list pairs each X.Y.Z version with its main-<sha> build tag
+    (they share a manifest digest). Use --releases / --builds for a single
+    fast column. For private packages, export GHCR_USER + GHCR_TOKEN or let
+    install-forge-deploy.sh store them in ${STATE_DIR}.
   * Refuses to deploy 'latest' — only immutable tags are accepted.
   * State: ${STATE_FILE}
   * Log:   ${LOG_FILE}
@@ -191,24 +196,91 @@ validate_tag() {
 # GHCR API
 # ─────────────────────────────────────────────────────────────
 
-# Anonymous bearer token for a public GHCR image (works without auth).
+# Per-repo token cache. GHCR pull tokens live ~5 min — plenty for one
+# command run, and caching means the per-tag digest resolution in the
+# combined list view doesn't re-fetch a token for every single HEAD.
+declare -A _GHCR_TOKEN_CACHE
+
+# Bearer token for a GHCR image. Works anonymously for public images;
+# when GHCR_USER + GHCR_TOKEN are exported (or stored in the state dir)
+# the token is requested with Basic auth so private packages resolve too.
 ghcr_token() {
   local repo="$1"
-  curl -fsSL "https://${REGISTRY_HOST}/token?service=${REGISTRY_HOST}&scope=repository:${REGISTRY_OWNER}/${repo}:pull" \
-    | jq -r '.token'
+  if [[ -n "${_GHCR_TOKEN_CACHE[$repo]:-}" ]]; then
+    printf '%s' "${_GHCR_TOKEN_CACHE[$repo]}"
+    return 0
+  fi
+  local url="https://${REGISTRY_HOST}/token?service=${REGISTRY_HOST}&scope=repository:${REGISTRY_OWNER}/${repo}:pull"
+  local token creds
+  creds=$(ghcr_basic_creds)
+  if [[ -n "$creds" ]]; then
+    token=$(curl -fsSL -u "$creds" "$url" | jq -r '.token' 2>/dev/null || true)
+  else
+    token=$(curl -fsSL "$url" | jq -r '.token' 2>/dev/null || true)
+  fi
+  [[ -n "$token" && "$token" != "null" ]] || return 1
+  _GHCR_TOKEN_CACHE[$repo]="$token"
+  printf '%s' "$token"
 }
 
-# List tags for a given image. Returns one tag per line. Empty if none.
+# Optional Basic-auth credentials for private packages. Reads GHCR_USER +
+# GHCR_TOKEN from the environment first, then from the state dir files
+# (written by install-forge-deploy.sh). Echoes "user:token" or nothing.
+ghcr_basic_creds() {
+  if [[ -n "${GHCR_USER:-}" && -n "${GHCR_TOKEN:-}" ]]; then
+    printf '%s:%s' "$GHCR_USER" "$GHCR_TOKEN"
+    return 0
+  fi
+  local uf="${STATE_DIR}/ghcr-user" tf="${STATE_DIR}/ghcr-token"
+  if [[ -r "$uf" && -r "$tf" ]]; then
+    local u t
+    u=$(tr -d '\n\r' < "$uf"); t=$(tr -d '\n\r' < "$tf")
+    [[ -n "$u" && -n "$t" ]] && printf '%s:%s' "$u" "$t"
+  fi
+}
+
+# List tags for a given image, following GHCR pagination so images with
+# 100+ tags (every build accumulates one) aren't truncated to the first
+# page. Returns one tag per line. Empty if none.
 ghcr_list_tags() {
-  local repo="$1" token
+  local repo="$1" token page last="" all="" n=100
   token=$(ghcr_token "$repo") || return 1
   [[ -n "$token" ]] || return 1
-  curl -fsSL \
+  while :; do
+    local url="https://${REGISTRY_HOST}/v2/${REGISTRY_OWNER}/${repo}/tags/list?n=${n}"
+    [[ -n "$last" ]] && url="${url}&last=${last}"
+    page=$(curl -fsSL \
+      -H "Authorization: Bearer $token" \
+      -H "Accept: application/vnd.oci.image.index.v1+json" \
+      "$url" | jq -r '.tags[]?' 2>/dev/null || true)
+    [[ -z "$page" ]] && break
+    all+="${page}"$'\n'
+    local count
+    count=$(printf '%s\n' "$page" | grep -c . || true)
+    (( count < n )) && break
+    last=$(printf '%s\n' "$page" | tail -1)
+  done
+  printf '%s' "$all" | grep -v '^$' || true
+}
+
+# Echo the manifest digest for a tag (the sha256:… that buildx assigns the
+# manifest list). Tags pushed together by `imagetools create` share one
+# digest, so this is how the list view pairs a version with its build-sha.
+# Exported so it can run under `xargs -P` for parallel resolution.
+ghcr_manifest_digest() {
+  local repo="$1" tag="$2" token
+  token=$(ghcr_token "$repo") || return 1
+  [[ -n "$token" ]] || return 1
+  curl -fsSL -I \
     -H "Authorization: Bearer $token" \
     -H "Accept: application/vnd.oci.image.index.v1+json" \
-    "https://${REGISTRY_HOST}/v2/${REGISTRY_OWNER}/${repo}/tags/list" \
-    | jq -r '.tags[]?' \
-    || true
+    -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+    -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+    -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+    "https://${REGISTRY_HOST}/v2/${REGISTRY_OWNER}/${repo}/manifests/${tag}" 2>/dev/null \
+    | tr -d '\r' \
+    | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}' \
+    | tail -1
 }
 
 # HEAD a tag's manifest to verify existence. 0 = exists, 1 = missing.
@@ -352,9 +424,12 @@ wait_healthy() {
 # Commands
 # ─────────────────────────────────────────────────────────────
 
+# Number of recent versions the combined view resolves + displays.
+readonly LIST_VERSION_LIMIT=10
+
 cmd_list() {
-  local mode="${1:-builds}"  # builds | releases
-  local svc_id pattern
+  local mode="${1:-combined}"  # combined | builds | releases
+  local svc_id
   printf '\n%sAvailable tags%s (mode=%s)\n\n' "${C_BOLD}" "${C_RESET}" "$mode"
   for svc_id in $(all_service_ids); do
     local repo
@@ -367,19 +442,97 @@ cmd_list() {
       continue
     fi
     case "$mode" in
-      builds)   pattern='^main-[a-f0-9]+$' ;;
-      releases) pattern='^[0-9]+\.[0-9]+\.[0-9]+$' ;;
-      *)        pattern='.' ;;
+      builds)
+        local matched
+        # grep||true: under `set -e` a no-match grep would otherwise abort.
+        matched=$(printf '%s\n' "$tags" | grep -E '^main-[a-f0-9]+$' | sort -r | head -"$LIST_VERSION_LIMIT" || true)
+        [[ -z "$matched" ]] \
+          && printf '  %s(no build tags)%s\n' "${C_DIM}" "${C_RESET}" \
+          || printf '%s\n' "$matched" | sed 's/^/  /'
+        ;;
+      releases)
+        local matched
+        # sort -Vr: version-aware so 0.0.115 ranks above 0.0.9 (plain
+        # sort -r would put 0.0.9 first — wrong). grep||true: see above.
+        matched=$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -Vr | head -"$LIST_VERSION_LIMIT" || true)
+        [[ -z "$matched" ]] \
+          && printf '  %s(no release tags)%s\n' "${C_DIM}" "${C_RESET}" \
+          || printf '%s\n' "$matched" | sed 's/^/  /'
+        ;;
+      combined|*)
+        list_combined "$repo" "$tags"
+        ;;
     esac
-    local matched
-    matched=$(printf '%s\n' "$tags" | grep -E "$pattern" | sort -r | head -10)
-    if [[ -z "$matched" ]]; then
-      printf '  %s(no tags matching %s)%s\n' "${C_DIM}" "$pattern" "${C_RESET}"
-    else
-      printf '%s\n' "$matched" | sed 's/^/  /'
-    fi
   done
   printf '\n'
+}
+
+# Combined view: pairs each recent X.Y.Z version with its main-<sha> build
+# tag. The manifest workflow stitches both onto one digest, so we resolve
+# the digest of every tag (in parallel) and group by it. Output:
+#   0.0.115      (main-972e58a)   ← latest
+list_combined() {
+  local repo="$1" tags="$2"
+  [[ -z "$tags" ]] && tags=$(ghcr_list_tags "$repo" 2>/dev/null || true)
+
+  # grep||true throughout: under `set -e` a no-match grep aborts the run.
+  local versions shas
+  versions=$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -Vr | head -"$LIST_VERSION_LIMIT" || true)
+  shas=$(printf '%s\n' "$tags" | grep -E '^main-[a-f0-9]+$' || true)
+
+  if [[ -z "$versions" ]]; then
+    # No semver tags yet — fall back to a plain build-hash list.
+    local b
+    b=$(printf '%s\n' "$shas" | sort -r | head -"$LIST_VERSION_LIMIT" || true)
+    [[ -z "$b" ]] \
+      && printf '  %s(no tags)%s\n' "${C_DIM}" "${C_RESET}" \
+      || printf '%s\n' "$b" | sed 's/^/  /'
+    return
+  fi
+
+  # Resolve digest → version for the shown versions, and the digest of every
+  # build tag, in parallel. xargs -P keeps this responsive even with 100+
+  # build tags. Token is pre-warmed so the parallel workers reuse the cache.
+  ghcr_token "$repo" >/dev/null 2>&1 || true
+  printf '  %s(resolving build hashes…)%s\r' "${C_DIM}" "${C_RESET}" >&2
+
+  export REGISTRY_HOST REGISTRY_OWNER STATE_DIR
+  export -f ghcr_manifest_digest ghcr_token ghcr_basic_creds
+
+  local ver_digests sha_digests
+  ver_digests=$(printf '%s\n' "$versions" \
+    | xargs -P 8 -I{} bash -c 'd=$(ghcr_manifest_digest "$0" "$1"); [[ -n "$d" ]] && printf "%s\t%s\n" "$1" "$d"' "$repo" {} 2>/dev/null || true)
+  sha_digests=$(printf '%s\n' "$shas" \
+    | xargs -P 8 -I{} bash -c 'd=$(ghcr_manifest_digest "$0" "$1"); [[ -n "$d" ]] && printf "%s\t%s\n" "$1" "$d"' "$repo" {} 2>/dev/null || true)
+
+  # digest → sha lookup.
+  local -A sha_by_digest
+  local tag dg
+  while IFS=$'\t' read -r tag dg; do
+    [[ -n "$dg" ]] && sha_by_digest["$dg"]="$tag"
+  done <<<"$sha_digests"
+
+  # version → digest lookup.
+  local -A digest_by_ver
+  while IFS=$'\t' read -r tag dg; do
+    [[ -n "$tag" ]] && digest_by_ver["$tag"]="$dg"
+  done <<<"$ver_digests"
+
+  printf '  %-40s\r' '' >&2  # clear the progress line
+
+  local first=1 v sha
+  while IFS= read -r v; do
+    [[ -z "$v" ]] && continue
+    dg="${digest_by_ver[$v]:-}"
+    sha="${sha_by_digest[$dg]:-}"
+    local latest_note=""
+    if [[ "$first" == "1" ]]; then latest_note="  ${C_DIM}← latest${C_RESET}"; first=0; fi
+    if [[ -n "$sha" ]]; then
+      printf '  %s%-12s%s  %s(%s)%s%s\n' "${C_BOLD}" "$v" "${C_RESET}" "${C_DIM}" "$sha" "${C_RESET}" "$latest_note"
+    else
+      printf '  %s%-12s%s  %s(build hash unresolved)%s%s\n' "${C_BOLD}" "$v" "${C_RESET}" "${C_DIM}" "${C_RESET}" "$latest_note"
+    fi
+  done <<<"$versions"
 }
 
 cmd_status() {
@@ -614,13 +767,15 @@ main() {
   fi
 
   local mode="" service_arg="" positional=""
-  local list_releases=false
+  # list_mode: combined (default — version + build-sha paired) | releases | builds
+  local list_mode="combined"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --help|-h)         usage; exit 0 ;;
       --version|-V)      printf 'forge-deploy %s\n' "$FORGE_DEPLOY_VERSION"; exit 0 ;;
       --list)            mode="list"; shift ;;
-      --releases)        list_releases=true; shift ;;
+      --releases)        list_mode="releases"; shift ;;
+      --builds)          list_mode="builds"; shift ;;
       --status)          mode="status"; shift ;;
       --rollback)        mode="rollback"; shift ;;
       --logs)            mode="logs"; shift ;;
@@ -641,7 +796,7 @@ main() {
   case "$mode" in
     list)
       preflight
-      if $list_releases; then cmd_list releases; else cmd_list builds; fi
+      cmd_list "$list_mode"
       ;;
     status)
       preflight

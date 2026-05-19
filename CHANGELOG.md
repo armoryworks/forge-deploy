@@ -4,8 +4,13 @@ All notable changes to forge-deploy and its packaged images. Format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- **`forge-deploy --list` now pairs each version with its build-sha** (forge-deploy `0.2.0`). The default view resolves the manifest digest of every recent `X.Y.Z` tag and every `main-<sha>` tag (in parallel via `xargs -P`), groups by digest — they share one digest because the release-manifest workflow stitches all tags onto a single manifest list — and prints `0.0.115  (main-972e58a)  ← latest`. `--list --releases` and `--list --builds` give the old single-column views. Version sort fixed to `sort -Vr` so `0.0.115` ranks above `0.0.9` (plain `sort -r` ordered them wrong). `ghcr_list_tags` now follows GHCR pagination so images with 100+ accumulated tags aren't truncated to the first page.
+
 ### Added
 
+- **GHCR Basic-auth support in `forge-deploy`** for the window where the `forge-*` container packages are still private. Reads `GHCR_USER` + `GHCR_TOKEN` from the environment, or from `${STATE_DIR}/ghcr-user` + `ghcr-token` written by `install-forge-deploy.sh` (`sudo GHCR_USER=… GHCR_TOKEN=ghp_… ./scripts/install-forge-deploy.sh`). Falls back to anonymous token requests for public images, so no change is needed once the packages are flipped to public. Per-repo token caching added so the parallel digest resolution doesn't re-mint a token per request.
 - `docs/DEPLOY.md` — canonical install runbook covering Pi 5 / Ubuntu Server arm64 + Cloudflare Tunnel topology.
 - `docs/TROUBLESHOOTING.md` — symptom/cause/fix catalog covering host setup, image pull, stack startup, runtime, and ingress issues encountered in real deploys.
 - `CHANGELOG.md` (this file).
