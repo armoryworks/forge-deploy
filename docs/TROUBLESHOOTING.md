@@ -201,6 +201,26 @@ This specific bug was fixed; see CHANGELOG.md.
 
 ## Runtime
 
+### `forge-deploy` rolls back the API after "waiting for healthy" times out
+
+**Symptom**: `forge-deploy deploy api <tag>` pulls and starts the new image, then prints `Service did not become healthy — rolling back to <prior>` once the wait passes the timeout. The rolled-back (older) image comes up fine.
+
+**Cause**: forge-api does its slow startup work **before** it serves traffic — `MigrateAsync` applies any pending EF Core migrations, the seeders run, and `/api/v1/health` is a *composite* readiness check that stays `503` until Postgres, Hangfire, MinIO, **and** SignalR all report healthy. The deploy gate polls `http://127.0.0.1:<API_PORT>/api/v1/health` with `curl -fsS`, which treats `503` (and connection-refused while still migrating) as "not healthy". Against a populated database, a clean deploy legitimately needs longer than the old fixed 60s, so the gate fired and rolled back a build that was actually fine.
+
+> ⚠ This rollback is risky, not just annoying: `MigrateAsync` may have **already applied the new schema** before the gate gave up, leaving the older (rolled-back) image running against a newer database. If a deploy keeps rolling back, check `docker logs forge-api` for `[DB-LIFECYCLE] Running MigrateAsync...` and confirm the schema state before re-deploying.
+
+**Fix**: the timeout is now configurable and defaults to **180s**. Raise it for slower hosts / larger databases by setting it in `.env` (persistent) or as a one-off shell env var:
+
+```bash
+# Persistent — survives future deploys
+echo 'HEALTHCHECK_TIMEOUT_SECS=300' >> /opt/forge-deploy/.env
+
+# One-off for a single deploy
+HEALTHCHECK_TIMEOUT_SECS=300 forge-deploy deploy api <tag>
+```
+
+Confirm what's actually slow with `docker logs -f forge-api` during the deploy — the bulk of the time before the first `200` should be the `MigrateAsync` line. If it's a transient MinIO/Hangfire blip rather than migrations, fix that dependency instead of just raising the timeout.
+
 ### Health check returns 404 at `/health`
 
 **Symptom**: `curl http://localhost:5000/health` returns 404. Older deployment docs say this is the health endpoint.

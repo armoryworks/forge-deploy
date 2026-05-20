@@ -32,7 +32,14 @@ readonly COMPOSE_BASE="${REPO_ROOT}/docker-compose.yml"
 readonly COMPOSE_PROD="${REPO_ROOT}/docker-compose.prod.yml"
 readonly REGISTRY_HOST="ghcr.io"
 readonly REGISTRY_OWNER="armoryworks"
-readonly HEALTHCHECK_TIMEOUT_SECS=60
+# Max seconds to wait for a service to report healthy before rolling back.
+# forge-api runs EF Core migrations + warms its composite health check
+# (Postgres, Hangfire, MinIO, SignalR all gate /api/v1/health) BEFORE the
+# endpoint returns 200, so on a populated database a clean deploy routinely
+# needs more than the original fixed 60s — and a premature rollback is risky
+# because the new schema may already be migrated. Override per host via .env
+# (HEALTHCHECK_TIMEOUT_SECS=...) or a shell env var; default 180.
+readonly HEALTHCHECK_TIMEOUT_DEFAULT=180
 readonly HEALTHCHECK_POLL_INTERVAL=2
 
 # Service descriptors: service_id|compose_service|image_repo|env_var|healthcheck_kind
@@ -356,6 +363,17 @@ env_set() {
   mv "$tmp" "$ENV_FILE"
 }
 
+# Effective healthcheck timeout (seconds): .env override > shell env > default.
+# Validates to a positive integer; falls back to the default on garbage so a
+# typo can never make the wait loop exit immediately and roll back a good build.
+health_timeout() {
+  local v
+  v=$(env_get HEALTHCHECK_TIMEOUT_SECS)
+  v="${v:-${HEALTHCHECK_TIMEOUT_SECS:-$HEALTHCHECK_TIMEOUT_DEFAULT}}"
+  [[ "$v" =~ ^[1-9][0-9]*$ ]] || v="$HEALTHCHECK_TIMEOUT_DEFAULT"
+  printf '%s' "$v"
+}
+
 # ─────────────────────────────────────────────────────────────
 # Logging
 # ─────────────────────────────────────────────────────────────
@@ -380,9 +398,10 @@ wait_healthy() {
   local svc_id="$1" compose_svc health
   compose_svc=$(service_compose "$svc_id")
   health=$(service_health "$svc_id")
-  local elapsed=0
+  local elapsed=0 timeout
+  timeout=$(health_timeout)
 
-  while (( elapsed < HEALTHCHECK_TIMEOUT_SECS )); do
+  while (( elapsed < timeout )); do
     case "$health" in
       docker)
         # Use docker inspect on the container's Health.Status.
@@ -670,7 +689,7 @@ deploy_service() {
   fi
   ok "Container started"
 
-  step "Waiting for healthy ($HEALTHCHECK_TIMEOUT_SECS s max)"
+  step "Waiting for healthy ($(health_timeout) s max)"
   if wait_healthy "$svc_id"; then
     ok "Service healthy"
     state_set "$repo" "$target_tag"
