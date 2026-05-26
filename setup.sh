@@ -157,6 +157,21 @@ set_env() {
     fi
 }
 
+# Per-box component scope: services this box must NOT run (forge-deploy --wizard
+# writes FORGE_SCOPED_OUT to .env). Lets the installer drop e.g. forge-ui on an
+# API box instead of bringing the whole stack up everywhere.
+scoped_out_list() {
+    grep '^FORGE_SCOPED_OUT=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'\'
+}
+is_scoped_out() {
+    printf '%s\n' $(scoped_out_list) | grep -qx "$1"
+}
+# Echo only the args that are NOT scoped out (preserves order).
+keep_unscoped() {
+    local svc
+    for svc in "$@"; do is_scoped_out "$svc" || printf '%s\n' "$svc"; done
+}
+
 # Helper: append a line to the rollback script. Creates the file (with header)
 # on first call. Used by --public preflight to record reversal commands so the
 # operator can `bash setup-public-rollback.sh` to undo what setup did.
@@ -1107,7 +1122,9 @@ else
     step "Pulling prebuilt images from GHCR"
     info "Multi-arch images: linux/amd64 + linux/arm64. Docker auto-selects."
     echo ""
-    if ! docker compose pull forge-api forge-ui; then
+    PULL_SVCS=()
+    mapfile -t PULL_SVCS < <(keep_unscoped forge-api forge-ui)
+    if (( ${#PULL_SVCS[@]} > 0 )) && ! docker compose pull "${PULL_SVCS[@]}"; then
         fail "Failed to pull GHCR images"
         info "Common causes:"
         info "  - No network connectivity to ghcr.io"
@@ -1115,7 +1132,7 @@ else
         info "  - Multi-arch image missing your architecture (try ./setup.sh --source)"
         exit 1
     fi
-    ok "Images pulled from GHCR"
+    ok "Images pulled from GHCR (${PULL_SVCS[*]})"
 fi
 
 # Git hooks only matter inside a git checkout that has them — skip if absent
@@ -1126,14 +1143,15 @@ if [[ -d .githooks ]]; then
     ok "Pre-commit hook enabled (runs tests before commit)"
 fi
 
-step "Starting core services (db, storage, backup, api, ui)"
-
-docker compose up -d --remove-orphans \
-    forge \
-    forge-storage \
-    forge-backup \
-    forge-api \
-    forge-ui
+# Core services minus anything scoped out for this box (forge-deploy --wizard).
+# --remove-orphans then prunes a previously-running service that is now scoped
+# out (e.g. forge-ui on a box converted to API-only).
+CORE_UP=()
+mapfile -t CORE_UP < <(keep_unscoped forge forge-storage forge-backup forge-api forge-ui)
+step "Starting core services: ${CORE_UP[*]:-<none>}"
+if (( ${#CORE_UP[@]} > 0 )); then
+    docker compose up -d --remove-orphans "${CORE_UP[@]}"
+fi
 
 # --- Optional: AI ---
 if $INCLUDE_AI; then

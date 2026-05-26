@@ -3,6 +3,7 @@
 # papercut on the Pi (git status --porcelain flagged them as dirty).
 .env
 docker-compose.override.yml
+docker-compose.scope.yml
 setup-public-rollback.sh
 
 # Operator-managed runtime data (bind-mount targets).
