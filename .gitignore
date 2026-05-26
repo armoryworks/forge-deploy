@@ -4,6 +4,8 @@
 .env
 docker-compose.override.yml
 docker-compose.scope.yml
+docker-compose.remote-api.yml
+forge-api-proxy.conf
 setup-public-rollback.sh
 
 # Operator-managed runtime data (bind-mount targets).
