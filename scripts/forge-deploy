@@ -755,6 +755,18 @@ stack_field() {
   return 1
 }
 
+# Known depends_on edges in the stack. Used to drop edges that would point at a
+# scoped-out service — compose rejects the whole project otherwise ("depends on
+# undefined service ..."), which breaks EVERY compose command on the box.
+service_deps() {
+  case "$1" in
+    forge-ui)     printf 'forge-api' ;;
+    forge-api)    printf 'forge forge-storage' ;;
+    forge-backup) printf 'forge forge-storage' ;;
+    *)            printf '' ;;
+  esac
+}
+
 # Regenerate the per-box scope from a space-separated list of compose service
 # names to scope OUT. Idempotent — rewrites everything from the given list:
 #   1. docker-compose.scope.yml  — profiles-out each service (bare `up` skips it)
@@ -777,6 +789,16 @@ write_scope() {
       local s
       for s in $scoped_out; do
         printf '  %s:\n    profiles: ["scoped-out"]\n' "$s"
+      done
+      # depends_on hygiene: a KEPT service whose depends_on points at a
+      # scoped-out service makes the whole project invalid. Reset that edge.
+      # (e.g. UI box: forge-ui kept, forge-api scoped -> drop forge-ui's edge.)
+      local dependent deps d need
+      for dependent in forge-ui forge-api forge-backup; do
+        printf '%s\n' $scoped_out | grep -qx "$dependent" && continue
+        deps=$(service_deps "$dependent"); need=0
+        for d in $deps; do printf '%s\n' $scoped_out | grep -qx "$d" && need=1; done
+        (( need )) && printf '  %s:\n    depends_on: !reset null\n' "$dependent"
       done
     } > "$COMPOSE_SCOPE"
   fi
