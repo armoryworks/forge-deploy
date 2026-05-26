@@ -95,21 +95,25 @@ fi
 
 # ── 7. Overlay-set drift (cohost box vs CLI base+prod) ────────
 section "Compose overlay set"
-proj=$(docker compose ls 2>/dev/null | awk 'NR>1 && $1!="" {print $1; exit}')
-running_files=$(docker compose ls 2>/dev/null | awk -v p="${proj:-_none_}" '$1==p{print}' | grep -oE '/[^ ,]+\.ya?ml' | tr '\n' ' ')
+# The forge project = the compose project whose config files live under REPO_ROOT.
+# A cohost box runs OTHER projects too (e.g. armory-works-web) — match on the
+# config-file path so we never inspect the wrong project.
+forge_line=$(docker compose ls 2>/dev/null | grep -F "${REPO_ROOT}/" | head -1)
+proj=$(awk '{print $1}' <<<"$forge_line")
+running_files=$(grep -oE '/[^ ,]+\.ya?ml' <<<"$forge_line" | tr '\n' ' ')
 if [[ -n "$proj" ]]; then
-  pass "running compose project: $proj"
+  pass "forge compose project: $proj"
   (( QUIET )) || printf '       %soperative files: %s%s\n' "${C_DIM}" "${running_files:-<none>}" "${C_RESET}"
   mode=$(envval QBE_HOSTING_MODE || echo "")
   if [[ "$mode" == "cohost" ]] && [[ "$running_files" != *cohost* ]]; then
-    warn "cohost mode but running stack has no cohost overlay — deploys may drift" \
-         "ensure docker-compose.cohost.yml is in the operative -f set (forge-deploy uses base+prod only)"
+    warn "cohost mode but the forge stack has no cohost overlay — deploys may drift" \
+         "ensure docker-compose.cohost.yml is in the operative -f set"
   elif [[ "$running_files" == *cohost* ]]; then
-    warn "stack uses docker-compose.cohost.yml, but forge-deploy's compose() uses base+prod only" \
-         "deploys via forge-deploy will recreate services WITHOUT cohost settings — verify before deploying"
+    warn "forge stack uses docker-compose.cohost.yml, but forge-deploy's compose() uses base+prod only" \
+         "deploys via forge-deploy would recreate services WITHOUT cohost settings — needs a CLI fix before deploying on this box"
   else pass "overlay set consistent with mode"; fi
 else
-  warn "no running compose project detected" "first deploy? run the wizard / setup.sh"
+  warn "no running forge compose project found under $REPO_ROOT" "first deploy? run setup.sh"
 fi
 
 # ── 8. Existing deploy-state (informational) ──────────────────
