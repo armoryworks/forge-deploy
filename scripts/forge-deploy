@@ -112,6 +112,8 @@ USAGE:
   forge-deploy --components [list]    Show / set this box's components (e.g. --components "ui")
   forge-deploy --wizard               Interactive: REMOVE installed components from this box
                                       (stops+deletes containers, prevents auto-recreate; no start)
+  forge-deploy --up                   Bring up ONLY this box's components (never recreates removed ones)
+  forge-deploy compose <args>         Scope-aware 'docker compose' passthrough (use instead of bare compose)
   forge-deploy --list                 List recent versions paired with their build-sha (this box only)
   forge-deploy --list --releases      List <X.Y.Z> semver tags only
   forge-deploy --list --builds        List main-<sha> build tags only
@@ -128,6 +130,11 @@ EXAMPLES:
   forge-deploy 1.2.3                              Deploy a semver release to all
 
 NOTES:
+  * Bring the box up with 'forge-deploy --up', NOT bare 'docker compose up'.
+    Bare compose starts every service in the file set and resurrects the
+    components you removed with --wizard. --up brings up only this box's
+    components; 'forge-deploy compose ...' wraps any other compose verb with
+    the correct -f set + per-box scope.
   * Component scope: this box only lists/deploys the services named in
     FORGE_DEPLOY_SERVICES (.env) — e.g. "ui" on a UI box, "api" on an API
     box. Unset = all (legacy all-in-one). Set it with --components, e.g.
@@ -201,6 +208,12 @@ box_service_ids() {
       [[ "$id" == "$want" ]] && { printf '%s\n' "$id"; break; }
     done
   done
+}
+
+# Is a compose service scoped out on this box? (reads FORGE_SCOPED_OUT)
+is_scoped_out() {
+  local s="$1"
+  printf '%s\n' $(env_get FORGE_SCOPED_OUT 2>/dev/null | tr ',' ' ') | grep -qx "$s"
 }
 
 # Pretty one-line scope summary for headers.
@@ -865,6 +878,65 @@ cmd_wizard() {
   printf '  %sforge-deploy --service api%s    # deploy/refresh the backend to a pinned tag\n' "${C_DIM}" "${C_RESET}"
 }
 
+# ─────────────────────────────────────────────────────────────
+# Wrapped bring-up + compose passthrough (never run bare docker compose)
+# ─────────────────────────────────────────────────────────────
+
+# Bring up ONLY this box's components — never recreate scoped-out services.
+# This is the blessed alternative to a bare `docker compose up -d`, which would
+# start every service in the file set and resurrect the components you removed.
+cmd_up() {
+  preflight
+
+  # Core (always-on) services in dependency order: data tier, then api, then ui.
+  # Optional/profile services (ai/tts/logs/signing/test) are opt-in and brought
+  # up separately with their profiles — never by this command.
+  local up_order=(forge forge-storage forge-backup forge-api forge-ui)
+  local services=() s
+  for s in "${up_order[@]}"; do
+    is_scoped_out "$s" || services+=("$s")
+  done
+  (( ${#services[@]} )) || die "Nothing to bring up — every core service is scoped out on this box."
+
+  # Refuse to start on a floating 'latest' tag (the crash-loop foot-gun).
+  local v
+  for s in "${services[@]}"; do
+    case "$s" in
+      forge-api) v=SERVER_IMAGE_TAG ;;
+      forge-ui)  v=UI_IMAGE_TAG ;;
+      *)         v="" ;;
+    esac
+    [[ -n "$v" && "$(env_get "$v")" == "latest" ]] && \
+      die "$v=latest — pin an immutable tag first (forge-deploy <X.Y.Z|main-sha>), then retry"
+  done
+
+  # Broken frontier: a kept service depends on a scoped-out one (forge-ui→forge-api
+  # on a UI box). --no-deps stops compose from trying to pull the removed
+  # dependency back in (the only cross-scope edge in the stack).
+  local nodeps=""
+  if printf '%s\n' "${services[@]}" | grep -qx forge-ui && is_scoped_out forge-api; then
+    nodeps="--no-deps"
+  fi
+
+  step "Bringing up this box: ${services[*]}${nodeps:+  ($nodeps)}"
+  # shellcheck disable=SC2086  # $nodeps is intentionally word-split (empty or --no-deps)
+  compose up -d $nodeps "${services[@]}"
+  ok "Up. Scoped-out services were NOT started (forge-deploy --wizard removes them for good)."
+  cmd_status
+}
+
+# Scope-aware `docker compose` passthrough. Always injects the correct -f set
+# (base + cohost + scope overlay) and --env-file, so operators never hand-build
+# a bare `docker compose` invocation that ignores the per-box scope.
+#   forge-deploy compose ps
+#   forge-deploy compose logs -f forge-api
+#   forge-deploy compose stop
+cmd_compose() {
+  preflight
+  [[ $# -gt 0 ]] || die "forge-deploy compose <args> — e.g. 'compose ps', 'compose logs -f forge-api'"
+  compose "$@"
+}
+
 cmd_self_update() {
   step "Self-update: $REPO_ROOT"
   if [[ ! -d "${REPO_ROOT}/.git" ]]; then
@@ -1075,6 +1147,15 @@ main() {
     return
   fi
 
+  # `compose` subcommand: everything after it is passed verbatim to the
+  # scope-aware compose wrapper. Handle before flag parsing so flags like
+  # `-f` / `--profile` aren't intercepted as forge-deploy options.
+  if [[ "${1:-}" == "compose" ]]; then
+    shift
+    cmd_compose "$@"
+    return
+  fi
+
   local mode="" service_arg="" positional="" components_val=""
   # list_mode: combined (default — version + build-sha paired) | releases | builds
   local list_mode="combined"
@@ -1093,6 +1174,7 @@ main() {
         if [[ $# -ge 2 && "$2" != -* ]]; then components_val="$2"; shift 2; else shift; fi
         ;;
       --wizard)          mode="wizard"; shift ;;
+      --up|--start)      mode="up"; shift ;;
       --self-update)     mode="self-update"; shift ;;
       --service)
         [[ $# -ge 2 ]] || die "--service requires a value (api|ui|test|all)"
@@ -1132,6 +1214,9 @@ main() {
       ;;
     wizard)
       cmd_wizard
+      ;;
+    up)
+      cmd_up
       ;;
     self-update)
       cmd_self_update
