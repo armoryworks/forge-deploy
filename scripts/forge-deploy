@@ -22,7 +22,7 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-readonly FORGE_DEPLOY_VERSION="0.2.0"
+readonly FORGE_DEPLOY_VERSION="0.3.0"
 readonly REPO_ROOT="${FORGE_DEPLOY_REPO:-/opt/forge-deploy}"
 readonly STATE_DIR="/etc/forge"
 readonly STATE_FILE="${STATE_DIR}/deploy-state.json"
