@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# forge-preflight — read-only deploy doctor.
+#
+# Validates the things that have actually bitten forge deployments, and FAILS
+# LOUD with the exact fix BEFORE you deploy. Changes nothing — pure diagnosis.
+#
+#   forge-preflight            run all checks, exit 0 (GO) / 1 (issues)
+#   forge-preflight --quiet    only print problems + the verdict
+#
+# Each failure mode below maps to a real incident:
+#   * floating `latest` image          → API crash-looped on a bad build
+#   * git ownership / perms            → `git pull` blocked ("dubious ownership")
+#   * CRLF in *.sh                     → "bad interpreter: ...^M" on Linux
+#   * overlay-set drift                → CLI uses base+prod; cohost box needs cohost
+#   * wrong repo / remote              → script never landed on the server
+set -uo pipefail   # NOTE: no -e; checks must all run and tally, not abort early.
+
+readonly REPO_ROOT="${FORGE_DEPLOY_REPO:-/opt/forge-deploy}"
+readonly ENV_FILE="${REPO_ROOT}/.env"
+readonly EXPECTED_REMOTE="armoryworks/forge-deploy"
+readonly STATE_FILE="/etc/forge/deploy-state.json"
+
+if [[ -n "${NO_COLOR:-}" ]] || [[ ! -t 1 ]]; then
+  C_RESET=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_CYAN=""; C_BOLD=""; C_DIM=""
+else
+  C_RESET=$'\033[0m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'
+  C_CYAN=$'\033[36m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+fi
+QUIET=0; [[ "${1:-}" == "--quiet" ]] && QUIET=1
+
+PASS=0; WARN=0; FAIL=0
+section() { (( QUIET )) || printf '\n%s== %s ==%s\n' "${C_CYAN}${C_BOLD}" "$1" "${C_RESET}"; }
+pass() { PASS=$((PASS+1)); (( QUIET )) || printf '  %s[OK]%s %s\n' "${C_GREEN}" "${C_RESET}" "$1"; }
+warn() { WARN=$((WARN+1)); printf '  %s[!!]%s %s\n' "${C_YELLOW}" "${C_RESET}" "$1"; [[ -n "${2:-}" ]] && printf '       %sfix: %s%s\n' "${C_DIM}" "$2" "${C_RESET}"; }
+fail() { FAIL=$((FAIL+1)); printf '  %s[XX]%s %s\n' "${C_RED}" "${C_RESET}" "$1" >&2; [[ -n "${2:-}" ]] && printf '       %sfix: %s%s\n' "${C_DIM}" "$2" "${C_RESET}"; }
+
+# Read a key from .env (last wins), stripped of quotes.
+envval() { [[ -f "$ENV_FILE" ]] || return 1; grep -E "^${1}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"'' | xargs 2>/dev/null; }
+
+# ── 1. Repo + remote ──────────────────────────────────────────
+section "Repo & remote"
+if [[ ! -d "$REPO_ROOT" ]]; then
+  fail "deploy repo not found at $REPO_ROOT" "clone armoryworks/forge-deploy there, or set FORGE_DEPLOY_REPO"
+elif ! git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  fail "$REPO_ROOT is not a git checkout" "git clone https://github.com/${EXPECTED_REMOTE}.git $REPO_ROOT"
+else
+  remote=$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || echo "")
+  if [[ "$remote" == *"$EXPECTED_REMOTE"* ]]; then pass "origin = $EXPECTED_REMOTE"
+  else fail "origin is '$remote', expected *${EXPECTED_REMOTE}*" "you may be in the wrong repo (wrapper/app repo, not forge-deploy)"; fi
+fi
+
+# ── 2. Ownership / writability (the 'dubious ownership' wall) ──
+section "Ownership & permissions"
+if [[ -d "$REPO_ROOT/.git" ]]; then
+  if git -C "$REPO_ROOT" status >/dev/null 2>&1; then pass "git usable as $(id -un)"
+  else
+    fail "git refuses $REPO_ROOT (dubious ownership / perms)" \
+         "git config --global --add safe.directory $REPO_ROOT ; sudo chown -R \$(id -un):\$(id -gn) $REPO_ROOT"
+  fi
+  if [[ -w "$REPO_ROOT/.git" ]]; then pass ".git is writable (git pull will work)"
+  else fail ".git not writable by $(id -un)" "sudo chown -R \$(id -un):\$(id -gn) $REPO_ROOT"; fi
+fi
+
+# ── 3. Line endings (CRLF breaks shell scripts on Linux) ──────
+section "Line endings"
+crlf=$(grep -rlIU $'\r' "$REPO_ROOT" --include='*.sh' 2>/dev/null | grep -v '/\.git/' | head -5)
+if [[ -z "$crlf" ]]; then pass "no CRLF in *.sh"
+else fail "CRLF found in: $(echo "$crlf" | tr '\n' ' ')" "add .gitattributes (*.sh text eol=lf) then: sed -i 's/\\r\$//' <file>"; fi
+
+# ── 4. Docker + compose plugin ────────────────────────────────
+section "Docker"
+if docker version >/dev/null 2>&1; then pass "docker reachable as $(id -un)"
+else fail "cannot reach docker daemon" "add $(id -un) to the docker group or run with sudo"; fi
+if docker compose version >/dev/null 2>&1; then pass "docker compose plugin present"
+else fail "docker compose plugin missing" "install docker-compose-plugin"; fi
+
+# ── 5. .env present + required keys ───────────────────────────
+section "Environment (.env)"
+if [[ ! -f "$ENV_FILE" ]]; then
+  fail ".env missing at $ENV_FILE" "cp .env.example .env  (then run setup.sh / the wizard)"
+else
+  pass ".env present"
+  mode=$(envval QBE_HOSTING_MODE || echo "")
+  [[ -n "$mode" ]] && pass "hosting mode: $mode" || warn "QBE_HOSTING_MODE not set" "set it in .env (standalone|cohost)"
+
+  # 6. Immutable image tags — floating 'latest' is the crash-loop foot-gun.
+  for key in SERVER_IMAGE_TAG UI_IMAGE_TAG; do
+    tag=$(envval "$key" || echo "")
+    if [[ -z "$tag" ]]; then warn "$key not set" "forge-deploy --list, then pin a tag"
+    elif [[ "$tag" == "latest" ]]; then
+      fail "$key=latest (floating tag — this is what shipped the crash-loop)" "forge-deploy <X.Y.Z|main-sha> to pin an IMMUTABLE tag"
+    else pass "$key pinned: $tag"; fi
+  done
+fi
+
+# ── 7. Overlay-set drift (cohost box vs CLI base+prod) ────────
+section "Compose overlay set"
+proj=$(docker compose ls 2>/dev/null | awk 'NR>1 && $1!="" {print $1; exit}')
+running_files=$(docker compose ls 2>/dev/null | awk -v p="${proj:-_none_}" '$1==p{print}' | grep -oE '/[^ ,]+\.ya?ml' | tr '\n' ' ')
+if [[ -n "$proj" ]]; then
+  pass "running compose project: $proj"
+  (( QUIET )) || printf '       %soperative files: %s%s\n' "${C_DIM}" "${running_files:-<none>}" "${C_RESET}"
+  mode=$(envval QBE_HOSTING_MODE || echo "")
+  if [[ "$mode" == "cohost" ]] && [[ "$running_files" != *cohost* ]]; then
+    warn "cohost mode but running stack has no cohost overlay — deploys may drift" \
+         "ensure docker-compose.cohost.yml is in the operative -f set (forge-deploy uses base+prod only)"
+  elif [[ "$running_files" == *cohost* ]]; then
+    warn "stack uses docker-compose.cohost.yml, but forge-deploy's compose() uses base+prod only" \
+         "deploys via forge-deploy will recreate services WITHOUT cohost settings — verify before deploying"
+  else pass "overlay set consistent with mode"; fi
+else
+  warn "no running compose project detected" "first deploy? run the wizard / setup.sh"
+fi
+
+# ── 8. Existing deploy-state (informational) ──────────────────
+section "Deploy state"
+if [[ -f "$STATE_FILE" ]]; then pass "state file present: $STATE_FILE"
+else warn "no $STATE_FILE yet" "written by forge-deploy on first pin"; fi
+
+# ── Verdict ───────────────────────────────────────────────────
+printf '\n%s%s── preflight: %d ok, %d warn, %d fail ──%s\n' "${C_BOLD}" "${C_CYAN}" "$PASS" "$WARN" "$FAIL" "${C_RESET}"
+if (( FAIL > 0 )); then printf '%sNO-GO%s — fix the [XX] items above before deploying.\n' "${C_RED}${C_BOLD}" "${C_RESET}"; exit 1; fi
+if (( WARN > 0 )); then printf '%sGO (with warnings)%s — review the [!!] items.\n' "${C_YELLOW}${C_BOLD}" "${C_RESET}"; exit 0; fi
+printf '%sGO%s — environment is clean.\n' "${C_GREEN}${C_BOLD}" "${C_RESET}"; exit 0

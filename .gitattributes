@@ -5,6 +5,7 @@
 
 *.sh         text eol=lf
 scripts/forge-deploy text eol=lf
+scripts/forge-preflight text eol=lf
 
 # Compose / env / dot-config files: LF for portability between OSes.
 *.yml        text eol=lf
