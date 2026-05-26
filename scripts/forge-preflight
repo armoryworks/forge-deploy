@@ -37,6 +37,25 @@ fail() { FAIL=$((FAIL+1)); printf '  %s[XX]%s %s\n' "${C_RED}" "${C_RESET}" "$1"
 # Read a key from .env (last wins), stripped of quotes.
 envval() { [[ -f "$ENV_FILE" ]] || return 1; grep -E "^${1}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"'' | xargs 2>/dev/null; }
 
+# service-id -> .env image-tag key. forge-deploy versions exactly these GHCR images.
+svc_envvar() {
+  case "$1" in
+    api)  printf 'SERVER_IMAGE_TAG' ;;
+    ui)   printf 'UI_IMAGE_TAG' ;;
+    test) printf 'TEST_IMAGE_TAG' ;;
+  esac
+}
+
+# Which versioned services THIS box deploys (FORGE_DEPLOY_SERVICES in .env).
+# Unset = all (legacy all-in-one). Only these get the immutable-tag gate, so a
+# UI-only box never NO-GOs on SERVER_IMAGE_TAG=latest for an API it doesn't run.
+box_services() {
+  local raw
+  raw=$(envval FORGE_DEPLOY_SERVICES || echo "")
+  [[ -z "$raw" ]] && { printf 'api ui test'; return; }
+  printf '%s' "$raw" | tr ',' ' '
+}
+
 # ── 1. Repo + remote ──────────────────────────────────────────
 section "Repo & remote"
 if [[ ! -d "$REPO_ROOT" ]]; then
@@ -84,12 +103,29 @@ else
   [[ -n "$mode" ]] && pass "hosting mode: $mode" || warn "QBE_HOSTING_MODE not set" "set it in .env (standalone|cohost)"
 
   # 6. Immutable image tags — floating 'latest' is the crash-loop foot-gun.
-  for key in SERVER_IMAGE_TAG UI_IMAGE_TAG; do
+  #    Only gate the COMPONENTS THIS BOX RUNS. A UI box must not NO-GO because
+  #    SERVER_IMAGE_TAG=latest for a forge-api that lives on another box.
+  declared=$(envval FORGE_DEPLOY_SERVICES || echo "")
+  if [[ -z "$declared" ]]; then
+    warn "FORGE_DEPLOY_SERVICES not set — gating all components (api ui test)" \
+         "declare this box's components: forge-deploy --components \"ui\"  (or \"api\")"
+  else
+    pass "box components: $declared"
+  fi
+  for svc in $(box_services); do
+    key=$(svc_envvar "$svc"); [[ -n "$key" ]] || { warn "unknown component '$svc' in FORGE_DEPLOY_SERVICES" "valid: api ui test"; continue; }
     tag=$(envval "$key" || echo "")
-    if [[ -z "$tag" ]]; then warn "$key not set" "forge-deploy --list, then pin a tag"
+    if [[ -z "$tag" ]]; then warn "$key not set ($svc)" "forge-deploy --list, then pin a tag"
     elif [[ "$tag" == "latest" ]]; then
-      fail "$key=latest (floating tag — this is what shipped the crash-loop)" "forge-deploy <X.Y.Z|main-sha> to pin an IMMUTABLE tag"
-    else pass "$key pinned: $tag"; fi
+      fail "$key=latest ($svc — floating tag, this is what shipped the crash-loop)" "forge-deploy <X.Y.Z|main-sha> to pin an IMMUTABLE tag"
+    else pass "$key pinned: $tag ($svc)"; fi
+  done
+  # Flag a floating tag for a NON-managed service as info only (not a gate):
+  # dead config on this box, but worth removing so it can't bite if scope changes.
+  for svc in api ui test; do
+    box_services | tr ' ' '\n' | grep -qx "$svc" && continue
+    key=$(svc_envvar "$svc"); tag=$(envval "$key" || echo "")
+    [[ "$tag" == "latest" ]] && warn "$key=latest but '$svc' is not a component on this box (inert here)" "remove $key from .env, or add '$svc' via forge-deploy --components"
   done
 fi
 
@@ -105,13 +141,21 @@ if [[ -n "$proj" ]]; then
   pass "forge compose project: $proj"
   (( QUIET )) || printf '       %soperative files: %s%s\n' "${C_DIM}" "${running_files:-<none>}" "${C_RESET}"
   mode=$(envval QBE_HOSTING_MODE || echo "")
-  if [[ "$mode" == "cohost" ]] && [[ "$running_files" != *cohost* ]]; then
-    warn "cohost mode but the forge stack has no cohost overlay — deploys may drift" \
-         "ensure docker-compose.cohost.yml is in the operative -f set"
-  elif [[ "$running_files" == *cohost* ]]; then
-    warn "forge stack uses docker-compose.cohost.yml, but forge-deploy's compose() uses base+prod only" \
-         "deploys via forge-deploy would recreate services WITHOUT cohost settings — needs a CLI fix before deploying on this box"
-  else pass "overlay set consistent with mode"; fi
+  # forge-deploy's compose() is cohost-aware (base+cohost+prod when mode=cohost),
+  # so a running cohost overlay is now the CONSISTENT case — not a drift warning.
+  if [[ "$mode" == "cohost" ]]; then
+    if [[ "$running_files" == *cohost* ]]; then
+      pass "cohost overlay active — consistent with cohost-aware CLI (base+cohost+prod)"
+    else
+      warn "cohost mode but running stack has no cohost overlay — deploys may drift" \
+           "bring the stack up with base+cohost+prod (the CLI does this automatically)"
+    fi
+  else
+    if [[ "$running_files" == *cohost* ]]; then
+      warn "cohost overlay is active but QBE_HOSTING_MODE != cohost — mode/overlay mismatch" \
+           "set QBE_HOSTING_MODE=cohost in .env, or rebuild the stack without the cohost overlay"
+    else pass "overlay set consistent with mode"; fi
+  fi
 else
   warn "no running forge compose project found under $REPO_ROOT" "first deploy? run setup.sh"
 fi
