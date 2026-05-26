@@ -72,11 +72,11 @@ services:
       - RECREATE_DB=${RECREATE_DB:-false}
       - SEED_DEMO_DATA=${SEED_DEMO_DATA:-false}
       - SEED_USER_PASSWORD=${SEED_USER_PASSWORD:-}
-      - ConnectionStrings__DefaultConnection=Host=forge;Port=5432;Database=${POSTGRES_DB:-forge};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
+      - ConnectionStrings__DefaultConnection=Host=${DB_HOST:-forge};Port=${DB_PORT:-5432};Database=${POSTGRES_DB:-forge};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
       - Jwt__Key=${JWT_KEY:-dev-secret-key-change-in-production-min-32-chars!!}
       - Jwt__Issuer=${JWT_ISSUER:-forge}
       - Jwt__Audience=${JWT_AUDIENCE:-forge-ui}
-      - Minio__Endpoint=forge-storage:9000
+      - Minio__Endpoint=${MINIO_ENDPOINT:-forge-storage:9000}
       - Minio__PublicEndpoint=${MINIO_PUBLIC_ENDPOINT:-localhost:9000}
       - Minio__AccessKey=${MINIO_ROOT_USER:-minioadmin}
       - Minio__SecretKey=${MINIO_ROOT_PASSWORD:-minioadmin}

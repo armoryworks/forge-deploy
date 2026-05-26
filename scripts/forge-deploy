@@ -22,7 +22,7 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-readonly FORGE_DEPLOY_VERSION="0.3.0"
+readonly FORGE_DEPLOY_VERSION="0.4.0"
 readonly REPO_ROOT="${FORGE_DEPLOY_REPO:-/opt/forge-deploy}"
 readonly STATE_DIR="/etc/forge"
 readonly STATE_FILE="${STATE_DIR}/deploy-state.json"
@@ -96,6 +96,10 @@ else
   C_BOLD=$'\033[1m'
 fi
 
+# Mutable option globals — set by argument parsing, read by cmd_setup / cmd_edge.
+SETUP_ROLE=""; SETUP_API_URL=""; SETUP_DB_HOST=""; SETUP_MINIO=""
+EDGE_HOST=""; EDGE_UI=""; EDGE_API=""; EDGE_CERT=""; EDGE_KEY=""; EDGE_NO_RELOAD=""
+
 step() { printf '%s==> %s%s\n' "${C_CYAN}" "$1" "${C_RESET}"; }
 ok()   { printf '    %s[OK]%s %s\n' "${C_GREEN}" "${C_RESET}" "$1"; }
 warn() { printf '    %s[!!]%s %s\n' "${C_YELLOW}" "${C_RESET}" "$1"; }
@@ -111,6 +115,10 @@ usage() {
 forge-deploy ${FORGE_DEPLOY_VERSION} — forge deploy CLI
 
 USAGE:
+  forge-deploy --setup                Topology wizard: pick this box's role + auto-wire everything
+  forge-deploy --setup --role <r>     Unattended setup (r = all|ui+api|api+db|ui|api|db)
+                                        flags: --api-url <u> --db-host <h[:port]> --minio <h[:port]>
+                                               --host <fqdn> --cert <p> --key <p>  (edge vhost)
   forge-deploy                        Interactive: deploy THIS box's components, picking tags
   forge-deploy <tag>                  Deploy a specific tag to this box's components (or --service)
   forge-deploy --service <name>       Narrow to one service (api | ui | test | all) — scoped to this box
@@ -121,6 +129,10 @@ USAGE:
   forge-deploy compose <args>         Scope-aware 'docker compose' passthrough (use instead of bare compose)
   forge-deploy --remote-api <url>     UI box: forward /api + /hubs to the API box (no image rebuild)
                                       (no arg = show; 'off' = remove the wiring)
+  forge-deploy --remote-db <h[:port]> API box: point forge-api at a remote Postgres (+ --minio <h>)
+                                      (no arg = show; 'off' = revert to local db)
+  forge-deploy --edge --host <fqdn>   Generate + install the host nginx vhost (SPA->ui, api->API box)
+                                      flags: --ui <t> --api <t> --cert <p> --key <p> --no-reload
   forge-deploy --list                 List recent versions paired with their build-sha (this box only)
   forge-deploy --list --releases      List <X.Y.Z> semver tags only
   forge-deploy --list --builds        List main-<sha> build tags only
@@ -968,6 +980,187 @@ cmd_compose() {
   compose "$@"
 }
 
+# Point forge-api at a remote Postgres + MinIO (api/ui+api box, separate db box).
+# Writes DB_HOST/DB_PORT/MINIO_ENDPOINT to .env (compose interpolates them into
+# forge-api's ConnectionStrings + Minio__Endpoint, which default to the local
+# forge/forge-storage services). POSTGRES_*/MINIO_* creds must match the db box.
+#   forge-deploy --remote-db 192.168.1.50            (Postgres host, default :5432)
+#   forge-deploy --remote-db 192.168.1.50:5432 --minio 192.168.1.50:9000
+#   forge-deploy --remote-db                          (show current)
+#   forge-deploy --remote-db off                      (revert to local forge/forge-storage)
+cmd_remote_db() {
+  local pg="$1" minio="$2"
+  [[ -f "$ENV_FILE" ]] || die "Env file not found: $ENV_FILE (run setup.sh first)"
+
+  if [[ -z "$pg" || "$pg" == "show" ]]; then
+    printf 'DB_HOST:        %s\n' "$(env_get DB_HOST 2>/dev/null || echo '(unset -> forge, local)')"
+    printf 'DB_PORT:        %s\n' "$(env_get DB_PORT 2>/dev/null || echo '(unset -> 5432)')"
+    printf 'MINIO_ENDPOINT: %s\n' "$(env_get MINIO_ENDPOINT 2>/dev/null || echo '(unset -> forge-storage:9000, local)')"
+    return 0
+  fi
+  [[ -w "$ENV_FILE" ]] || die "Env file not writable: $ENV_FILE"
+
+  if [[ "$pg" == "off" || "$pg" == "clear" ]]; then
+    local tmp; tmp=$(mktemp)
+    grep -vE '^(DB_HOST|DB_PORT|MINIO_ENDPOINT)=' "$ENV_FILE" > "$tmp" && mv "$tmp" "$ENV_FILE"
+    ok "Reverted to local DB/MinIO (forge / forge-storage)"
+    return 0
+  fi
+
+  local host port
+  host="${pg%%:*}"; port="${pg##*:}"; [[ "$port" == "$host" ]] && port="5432"
+  env_set DB_HOST "$host"
+  env_set DB_PORT "$port"
+  ok "forge-api -> Postgres ${host}:${port}"
+  if [[ -n "$minio" ]]; then
+    [[ "$minio" == *:* ]] || minio="${minio}:9000"
+    env_set MINIO_ENDPOINT "$minio"
+    ok "forge-api -> MinIO ${minio}"
+  fi
+  printf '\n%sNote:%s POSTGRES_USER/PASSWORD/DB and MINIO_ROOT_USER/PASSWORD in this .env\n' "${C_YELLOW}" "${C_RESET}"
+  printf '      must match the db box. Redeploy to apply: forge-deploy --service api <tag> (or --up).\n'
+}
+
+# ── Edge (host reverse-proxy vhost) ──────────────────────────────────────────
+readonly EDGE_TAG="forge-deploy"
+
+# Render a topology-correct nginx vhost to stdout.
+# Args: host ui_target api_target cert key
+render_edge_vhost() {
+  local host="$1" ui="$2" api="$3" cert="$4" key="$5"
+  cat <<EOF
+# Generated by \`forge-deploy --edge\` — DO NOT edit by hand (it will be overwritten).
+# Topology: SPA -> ${ui} ; /api,/hubs,OIDC -> ${api}
+map \$http_upgrade \$forge_conn_upgrade { default upgrade; '' close; }
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${host};
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${host};
+
+    ssl_certificate     ${cert};
+    ssl_certificate_key ${key};
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    add_header Strict-Transport-Security "max-age=15768000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+
+    proxy_buffer_size       16k;
+    proxy_buffers         8 16k;
+    proxy_busy_buffers_size 32k;
+    client_max_body_size  100m;
+
+    # ---- API + SignalR + OIDC -> API target ----
+    location /api/                  { proxy_pass http://${api}; $(edge_proxy_headers) }
+    location /hubs/                 { proxy_pass http://${api}; $(edge_proxy_headers) proxy_read_timeout 86400s; proxy_send_timeout 86400s; }
+    location = /signin-oidc         { proxy_buffering off; proxy_pass http://${api}; $(edge_proxy_headers) }
+    location = /signout-callback-oidc { proxy_buffering off; proxy_pass http://${api}; $(edge_proxy_headers) }
+    location /connect/              { proxy_pass http://${api}; $(edge_proxy_headers) }
+    location /.well-known/          { proxy_pass http://${api}; $(edge_proxy_headers) }
+
+    # ---- SPA -> UI target ----
+    location / { proxy_pass http://${ui}; $(edge_proxy_headers) }
+}
+EOF
+}
+
+# Standard proxy headers (incl. WebSocket upgrade) emitted inline.
+edge_proxy_headers() {
+  printf 'proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $forge_conn_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Forwarded-Host $host;'
+}
+
+# Auto-detect a Let's Encrypt cert covering the host (or its parent domain).
+edge_detect_cert() {
+  local host="$1" d
+  for d in /etc/letsencrypt/live/*/; do
+    [[ -f "${d}fullchain.pem" ]] || continue
+    # match exact host dir, or a parent-domain wildcard dir (e.g. armoryworks.com*)
+    local name; name=$(basename "$d")
+    if [[ "$host" == "$name" || "$host" == *".${name%%.cloudflare}" || "$name" == "${host#*.}"* ]]; then
+      printf '%s' "${d}fullchain.pem"; return 0
+    fi
+  done
+  return 1
+}
+
+# Generate + install + reload the host nginx vhost for the public hostname.
+#   forge-deploy --edge --host forge.x.com --ui 127.0.0.1:4200 --api 192.168.1.198:5000 [--cert .. --key ..]
+cmd_edge() {
+  command -v nginx >/dev/null 2>&1 || sudo test -x /usr/sbin/nginx || die "host nginx not found (the edge generator targets host nginx)"
+  local host="$EDGE_HOST" ui="${EDGE_UI:-127.0.0.1:4200}" api="$EDGE_API" cert="$EDGE_CERT" key="$EDGE_KEY"
+
+  [[ -n "$host" ]] || { printf 'Public hostname (e.g. forge.example.com): '; read -r host; }
+  [[ -n "$host" ]] || die "--edge requires --host"
+  [[ -n "$api" ]] || api="127.0.0.1:5000"
+  api="${api#http://}"; api="${api#https://}"; api="${api%/}"
+  ui="${ui#http://}";   ui="${ui%/}"
+
+  if [[ -z "$cert" ]]; then
+    cert=$(edge_detect_cert "$host" || true)
+    [[ -n "$cert" ]] && ok "Detected cert: $cert" || { printf 'TLS fullchain.pem path: '; read -r cert; }
+  fi
+  [[ -n "$key" ]] || key="${cert%fullchain.pem}privkey.pem"
+  [[ -f "$cert" ]] || warn "cert not found: $cert (nginx -t will fail until it exists)"
+
+  # Pick the include dir nginx actually loads from.
+  local dir="/etc/nginx/conf.d" target
+  [[ -d /etc/nginx/conf.d ]] || dir="/etc/nginx/sites-enabled"
+  target="${dir}/${EDGE_TAG}-${host}.conf"
+
+  step "Rendering edge vhost for ${host}  (SPA->${ui}, API->${api})"
+  local rendered; rendered=$(mktemp)
+  render_edge_vhost "$host" "$ui" "$api" "$cert" "$key" > "$rendered"
+
+  # Neutralize conflicting server blocks for this host in OTHER active confs.
+  local f bak conflicts
+  conflicts=$(sudo grep -rlE "server_name[^;]*[[:space:]]${host}[;[:space:]]|server_name[[:space:]]+${host}[;[:space:]]" "$dir" /etc/nginx/sites-enabled 2>/dev/null | grep -vF "$target" | sort -u || true)
+  for f in $conflicts; do
+    bak="${f}.forge-bak.$(date -u +%Y%m%d-%H%M%S)"
+    step "Disabling existing '${host}' vhost in $f (backup: $bak)"
+    sudo cp "$f" "$bak"
+    sudo awk -v host="$host" -v tag="$EDGE_TAG" '
+      function emit(){ if(matched){ n=split(buf,L,"\n"); for(i=1;i<=n;i++){ if(i==n && L[i]=="") break; print "# [" tag " disabled] " L[i] } } else printf "%s", buf; buf=""; depth=0; inblk=0; matched=0 }
+      { if(!inblk && $0 ~ /^[[:space:]]*server[[:space:]]*\{/){ inblk=1; depth=0 }
+        if(inblk){ buf=buf $0 "\n"; o=gsub(/\{/,"{"); c=gsub(/\}/,"}"); depth+=o-c;
+          if($0 ~ ("server_name[^;]*[[:space:]]" host "[;[:space:]]") || $0 ~ ("server_name[[:space:]]+" host "[;[:space:]]")) matched=1;
+          if(depth<=0) emit(); next } print }
+    ' "$bak" | sudo tee "$f" >/dev/null
+  done
+
+  # Install our conf, validate, reload — restore everything on failure.
+  local prev_bak=""
+  if sudo test -f "$target"; then prev_bak="${target}.forge-bak.$(date -u +%Y%m%d-%H%M%S)"; sudo cp "$target" "$prev_bak"; fi
+  sudo tee "$target" < "$rendered" >/dev/null
+  rm -f "$rendered"
+  ok "Wrote $target"
+
+  if sudo nginx -t 2>/dev/null; then
+    if [[ -z "${EDGE_NO_RELOAD:-}" ]]; then
+      sudo systemctl reload nginx 2>/dev/null || sudo nginx -s reload
+      ok "nginx reloaded — ${host} now serves SPA from ${ui}, API from ${api}"
+    else
+      ok "nginx config valid (skipped reload: --no-reload)"
+    fi
+  else
+    err "nginx -t failed — rolling back all edge changes"
+    [[ -n "$prev_bak" ]] && sudo cp "$prev_bak" "$target" || sudo rm -f "$target"
+    for f in $conflicts; do
+      bak=$(sudo ls -1t "${f}.forge-bak."* 2>/dev/null | head -1); [[ -n "$bak" ]] && sudo cp "$bak" "$f"
+    done
+    sudo nginx -t 2>&1 | tail -3
+    die "Edge vhost rejected by nginx -t — restored previous config. Fix cert/host and retry."
+  fi
+}
+
 # Wire forge-ui's /api + /hubs to a remote API server (UI-only box). Stands up
 # a tiny nginx forwarder on the `forge-api` network alias, so forge-ui's baked
 # `http://forge-api:8080` target resolves to the forwarder, which relays to the
@@ -1084,6 +1277,99 @@ EOF
   printf '  • On the API box, publish the API on a reachable interface — set %sAPI_BIND=0.0.0.0%s\n' "${C_BOLD}" "${C_RESET}"
   printf '    (or its LAN IP) in .env and redeploy; by default it binds 127.0.0.1 (local-only).\n'
   printf '  • Verify from here: %scurl -sS %s/api/v1/health%s\n' "${C_DIM}" "$target" "${C_RESET}"
+}
+
+# ── Topology setup wizard ────────────────────────────────────────────────────
+# Roles and the compose services each one scopes OUT (everything else runs local).
+role_scoped_out() {
+  case "$1" in
+    all)     printf '' ;;
+    ui+api)  printf 'forge forge-storage forge-backup' ;;   # no db -> remote
+    api+db)  printf 'forge-ui' ;;                            # no ui  (ui is remote)
+    ui)      printf 'forge-api forge forge-storage forge-backup' ;;
+    api)     printf 'forge-ui forge forge-storage forge-backup' ;;  # no ui, no db
+    db)      printf 'forge-ui forge-api' ;;                  # db + storage + backup
+    *)       return 1 ;;
+  esac
+}
+role_valid() { role_scoped_out "$1" >/dev/null 2>&1; }
+# Does the role run a local forge-<svc>?
+role_runs() { ! printf '%s\n' $(role_scoped_out "$1") | grep -qx "$2"; }
+
+cmd_setup() {
+  [[ -f "$ENV_FILE" ]] || die "Env file not found: $ENV_FILE (run setup.sh first)"
+  [[ -w "$ENV_FILE" ]] || die "Env file not writable: $ENV_FILE (sudo chown -R \$(id -un):\$(id -gn) $REPO_ROOT)"
+
+  local role="$SETUP_ROLE"
+  if [[ -z "$role" ]]; then
+    printf '\n%s== forge-deploy topology setup ==%s\n' "${C_BOLD}${C_CYAN}" "${C_RESET}"
+    printf 'What does THIS box run?\n'
+    printf '  %s1%s) all       — ui + api + db (single box)\n' "${C_BOLD}" "${C_RESET}"
+    printf '  %s2%s) ui+api    — ui + api here, db on another box\n' "${C_BOLD}" "${C_RESET}"
+    printf '  %s3%s) api+db    — api + db here, ui on another box\n' "${C_BOLD}" "${C_RESET}"
+    printf '  %s4%s) ui        — ui only (api + db remote)\n' "${C_BOLD}" "${C_RESET}"
+    printf '  %s5%s) api       — api only (db remote, ui remote)\n' "${C_BOLD}" "${C_RESET}"
+    printf '  %s6%s) db        — database + storage only\n' "${C_BOLD}" "${C_RESET}"
+    printf 'Choose [1-6]: '
+    local c; read -r c
+    case "$c" in 1) role=all;; 2) role=ui+api;; 3) role=api+db;; 4) role=ui;; 5) role=api;; 6) role=db;; *) die "Invalid choice";; esac
+  fi
+  role_valid "$role" || die "Unknown role '$role' (all|ui+api|api+db|ui|api|db)"
+  step "Role: $role"
+
+  require_cmd docker; require_cmd jq
+
+  local api_url="$SETUP_API_URL" db_host="$SETUP_DB_HOST" minio="$SETUP_MINIO" pub_host="$EDGE_HOST"
+  local has_nginx=0; { command -v nginx >/dev/null 2>&1 || sudo test -x /usr/sbin/nginx 2>/dev/null; } && has_nginx=1
+
+  # Gather what this role needs (prompt only if not supplied as a flag).
+  if role_runs "$role" forge-ui && ! role_runs "$role" forge-api; then   # ui without local api
+    [[ -n "$api_url" ]] || { printf 'API box URL (e.g. http://192.168.1.198:5000): '; read -r api_url; }
+    [[ -n "$api_url" ]] || die "role '$role' needs --api-url"
+  fi
+  if role_runs "$role" forge-api && ! role_runs "$role" forge; then       # api without local db
+    [[ -n "$db_host" ]] || { printf 'DB box host[:port] (e.g. 192.168.1.50): '; read -r db_host; }
+    [[ -n "$db_host" ]] || die "role '$role' needs --db-host"
+    [[ -n "$minio" ]] || { printf 'MinIO host[:port] (Enter = same as DB host:9000): '; read -r minio; [[ -z "$minio" ]] && minio="${db_host%%:*}:9000"; }
+  fi
+  if role_runs "$role" forge-ui && [[ "$has_nginx" == 1 ]]; then          # serves the public site via host nginx
+    [[ -n "$pub_host" ]] || { printf 'Public hostname for the edge (e.g. forge.example.com): '; read -r pub_host; }
+  fi
+
+  # 1. Scope the containers for this role.
+  step "Scoping components for '$role'"
+  write_scope "$(role_scoped_out "$role")"
+  ok "FORGE_SCOPED_OUT = $(env_get FORGE_SCOPED_OUT | sed 's/^$/(none)/')"
+
+  # 2. Remote DB/MinIO (api without local db).
+  if role_runs "$role" forge-api && ! role_runs "$role" forge; then
+    SETUP_QUIET=1 cmd_remote_db "$db_host" "$minio"
+  fi
+  # 3. DB box: expose Postgres + MinIO on the LAN.
+  if [[ "$role" == "db" ]]; then
+    env_set POSTGRES_BIND 0.0.0.0; env_set MINIO_BIND 0.0.0.0
+    ok "Exposed Postgres + MinIO on 0.0.0.0 (LAN-reachable for the api box)"
+  fi
+  # 4. UI without local api: edge split (host nginx) or in-container forwarder (standalone).
+  local api_target="127.0.0.1:5000"
+  if role_runs "$role" forge-ui && ! role_runs "$role" forge-api; then
+    if [[ "$has_nginx" == 1 ]]; then
+      api_target="${api_url#http://}"; api_target="${api_target#https://}"; api_target="${api_target%/}"
+    else
+      cmd_remote_api "$api_url"   # forge-ui is the public edge -> forwarder
+    fi
+  fi
+  # 5. Edge vhost (only when this box fronts the public site via host nginx).
+  if role_runs "$role" forge-ui && [[ "$has_nginx" == 1 && -n "$pub_host" ]]; then
+    EDGE_HOST="$pub_host" EDGE_UI="127.0.0.1:4200" EDGE_API="$api_target" cmd_edge
+  fi
+  # 6. Bring up this box's containers.
+  cmd_up
+
+  # 7. Record the role.
+  local tmp; tmp=$(mktemp)
+  jq --arg r "$role" '.box = {role: $r, configuredAt: (now | todate)}' "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE" || rm -f "$tmp"
+  printf '\n%s✓ Setup complete — this box is role "%s".%s\n' "${C_GREEN}${C_BOLD}" "$role" "${C_RESET}"
 }
 
 cmd_self_update() {
@@ -1305,7 +1591,7 @@ main() {
     return
   fi
 
-  local mode="" service_arg="" positional="" components_val="" remote_api_val=""
+  local mode="" service_arg="" positional="" components_val="" remote_api_val="" remote_db_val=""
   # list_mode: combined (default — version + build-sha paired) | releases | builds
   local list_mode="combined"
   while [[ $# -gt 0 ]]; do
@@ -1324,6 +1610,22 @@ main() {
         ;;
       --wizard)          mode="wizard"; shift ;;
       --up|--start)      mode="up"; shift ;;
+      --setup)           mode="setup"; shift ;;
+      --role)            [[ $# -ge 2 ]] || die "--role needs a value"; SETUP_ROLE="$2"; shift 2 ;;
+      --api-url)         [[ $# -ge 2 ]] || die "--api-url needs a value"; SETUP_API_URL="$2"; shift 2 ;;
+      --db-host)         [[ $# -ge 2 ]] || die "--db-host needs a value"; SETUP_DB_HOST="$2"; shift 2 ;;
+      --minio)           [[ $# -ge 2 ]] || die "--minio needs a value"; SETUP_MINIO="$2"; shift 2 ;;
+      --edge)            mode="edge"; shift ;;
+      --host)            [[ $# -ge 2 ]] || die "--host needs a value"; EDGE_HOST="$2"; shift 2 ;;
+      --ui)              [[ $# -ge 2 ]] || die "--ui needs a value"; EDGE_UI="$2"; shift 2 ;;
+      --api)             [[ $# -ge 2 ]] || die "--api needs a value"; EDGE_API="$2"; shift 2 ;;
+      --cert)            [[ $# -ge 2 ]] || die "--cert needs a value"; EDGE_CERT="$2"; shift 2 ;;
+      --key)             [[ $# -ge 2 ]] || die "--key needs a value"; EDGE_KEY="$2"; shift 2 ;;
+      --no-reload)       EDGE_NO_RELOAD=1; shift ;;
+      --remote-db)
+        mode="remote-db"
+        if [[ $# -ge 2 && "$2" != --* ]]; then remote_db_val="$2"; shift 2; else shift; fi
+        ;;
       --remote-api)
         mode="remote-api"
         if [[ $# -ge 2 && "$2" != --* ]]; then remote_api_val="$2"; shift 2; else shift; fi
@@ -1370,6 +1672,15 @@ main() {
       ;;
     up)
       cmd_up
+      ;;
+    setup)
+      cmd_setup
+      ;;
+    edge)
+      cmd_edge
+      ;;
+    remote-db)
+      cmd_remote_db "$remote_db_val" "$SETUP_MINIO"
       ;;
     remote-api)
       cmd_remote_api "$remote_api_val"
