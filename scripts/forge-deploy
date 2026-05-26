@@ -30,6 +30,7 @@ readonly LOG_FILE="/var/log/forge-deploy.log"
 readonly ENV_FILE="${REPO_ROOT}/.env"
 readonly COMPOSE_BASE="${REPO_ROOT}/docker-compose.yml"
 readonly COMPOSE_PROD="${REPO_ROOT}/docker-compose.prod.yml"
+readonly COMPOSE_COHOST="${REPO_ROOT}/docker-compose.cohost.yml"
 readonly REGISTRY_HOST="ghcr.io"
 readonly REGISTRY_OWNER="armoryworks"
 # Max seconds to wait for a service to report healthy before rolling back.
@@ -170,6 +171,9 @@ preflight() {
   fi
   if [[ ! -f "$COMPOSE_PROD" ]]; then
     die "Prod compose overlay not found: $COMPOSE_PROD"
+  fi
+  if [[ "$(env_get QBE_HOSTING_MODE 2>/dev/null | tr -d '[:space:]')" == "cohost" ]] && [[ ! -f "$COMPOSE_COHOST" ]]; then
+    die "Cohost mode (QBE_HOSTING_MODE=cohost) but overlay not found: $COMPOSE_COHOST"
   fi
   if [[ ! -f "$ENV_FILE" ]]; then
     die "Env file not found: $ENV_FILE (run setup.sh first)"
@@ -390,7 +394,15 @@ log_event() {
 # ─────────────────────────────────────────────────────────────
 
 compose() {
-  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_BASE" -f "$COMPOSE_PROD" "$@"
+  local files=(-f "$COMPOSE_BASE") mode
+  # In cohost mode the cohost overlay must sit BETWEEN base and prod (matches how
+  # the stack is brought up: base,cohost,prod). Without it, deploys recreate
+  # services without their cohost networking/port bindings. Standalone boxes are
+  # unaffected (base+prod, exactly as before).
+  mode=$(env_get QBE_HOSTING_MODE 2>/dev/null | tr -d '[:space:]')
+  [[ "$mode" == "cohost" ]] && files+=(-f "$COMPOSE_COHOST")
+  files+=(-f "$COMPOSE_PROD")
+  docker compose --env-file "$ENV_FILE" "${files[@]}" "$@"
 }
 
 # Wait for a service to become healthy. Returns 0 healthy, 1 unhealthy/timeout.
