@@ -20,6 +20,10 @@ obj/
 # Node — tools/rfid-relay
 node_modules/
 
+# Audit/analysis probe scratch dropped in tools/ (regenerable; not deploy tooling).
+tools/*.csx
+tools/*.sql
+
 # OS junk
 .DS_Store
 Thumbs.db
