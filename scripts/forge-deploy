@@ -788,7 +788,11 @@ service_deps() {
 #   4. COMPOSE_FILE               — append/strip the scope file so bare compose honors it
 write_scope() {
   local scoped_out
-  scoped_out=$(printf '%s\n' $1 | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ *$//')
+  # `{ grep || true; }` so a no-match (empty $1, i.e. role=all) doesn't poison
+  # the pipeline under `set -euo pipefail` — pipefail otherwise propagates
+  # grep's exit-1, which silently aborts the wizard right after the
+  # "Scoping components for 'all'" banner.
+  scoped_out=$(printf '%s\n' $1 | { grep -v '^$' || true; } | sort -u | tr '\n' ' ' | sed 's/ *$//')
 
   if [[ -z "$scoped_out" ]]; then
     rm -f "$COMPOSE_SCOPE"
