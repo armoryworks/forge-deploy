@@ -1,0 +1,17 @@
+[Unit]
+Description=Run Forge host network watchdog every minute
+Documentation=https://github.com/armoryworks/forge-deploy
+
+[Timer]
+# First check 2 minutes after boot so networking has time to settle.
+OnBootSec=2min
+# Then every minute thereafter.
+OnUnitActiveSec=1min
+Unit=forge-network-watchdog.service
+# Don't catch up by running multiple times if the host was suspended;
+# the next single run is enough.
+Persistent=false
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

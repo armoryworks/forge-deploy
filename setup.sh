@@ -54,6 +54,12 @@
 #   --hostname <fqdn>    Explicit hostname for the self-signed cert CN/SAN.
 #                        Otherwise auto-detected via `hostname -f` (with a
 #                        prompt to confirm).
+#   --skip-host-watchdog Skip installing the host network watchdog (Linux
+#                        only). The watchdog runs every minute, restarts
+#                        networking on persistent failure, and reboots
+#                        the box if the network stays dead — recovers a
+#                        wedged Pi NIC without a physical button press.
+#                        Installed by default on Linux; no-op on macOS.
 #   -h / --help          Show this help.
 
 set -euo pipefail
@@ -69,6 +75,9 @@ MODE_FLAG=""  # "" = auto/use .env, "cohost" or "standalone" force
 PUBLIC=false
 PUBLIC_PREFLIGHT=true
 PUBLIC_HOSTNAME=""
+# Host network watchdog (Linux/systemd only — silently no-op on macOS).
+# Env override: SKIP_HOST_WATCHDOG=1 ./setup.sh
+SKIP_HOST_WATCHDOG=${SKIP_HOST_WATCHDOG:-false}
 
 show_help() {
     sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
@@ -98,6 +107,7 @@ while (( $# > 0 )); do
             PUBLIC_HOSTNAME="$1"
             ;;
         --hostname=*)           PUBLIC_HOSTNAME="${1#--hostname=}" ;;
+        --skip-host-watchdog)   SKIP_HOST_WATCHDOG=true ;;
         -h|--help)              show_help; exit 0 ;;
         *) echo "Unknown option: $1"; echo "Run './setup.sh --help' for usage."; exit 1 ;;
     esac
@@ -1213,6 +1223,38 @@ fi
 if $FRESH; then
     set_env "RECREATE_DB" "false"
     ok "Reset RECREATE_DB=false (database won't be wiped on next restart)"
+fi
+
+# ─────────────────────────────────────────────────────────────
+# 8b. Host resilience: install network watchdog (Linux only)
+# ─────────────────────────────────────────────────────────────
+#
+# The Pi has a known failure mode where the OS stays alive but the network
+# stack hangs (USB-attached Ethernet driver, WiFi firmware). The hardware
+# watchdog can't catch it because systemd is still healthy. The host
+# network watchdog pings out every minute and force-recovers (restart
+# networking → reboot) if the host is unreachable. Idempotent; safe to
+# re-run; bails out on macOS and on Linux without systemd.
+
+if $IS_LINUX && ! $SKIP_HOST_WATCHDOG; then
+    WATCHDOG_INSTALLER="$(dirname -- "$0")/scripts/install-host-watchdog.sh"
+    if [[ -x "$WATCHDOG_INSTALLER" ]]; then
+        step "Installing host network watchdog"
+        # Bail out non-fatally — a failed watchdog install must not block
+        # an otherwise-successful deploy. The user can re-run the installer
+        # by hand to debug.
+        if sudo -E "$WATCHDOG_INSTALLER"; then
+            ok "Host network watchdog active"
+        else
+            warn "Host network watchdog install failed (non-fatal)"
+            warn "Re-run by hand: sudo ${WATCHDOG_INSTALLER}"
+        fi
+    elif [[ -f "$WATCHDOG_INSTALLER" ]]; then
+        warn "Found $WATCHDOG_INSTALLER but it isn't executable — skipping"
+        warn "Fix: chmod +x $WATCHDOG_INSTALLER"
+    fi
+elif $IS_LINUX && $SKIP_HOST_WATCHDOG; then
+    info "Skipping host network watchdog install (--skip-host-watchdog)"
 fi
 
 # ─────────────────────────────────────────────────────────────

@@ -1,0 +1,28 @@
+[Unit]
+Description=Forge host network connectivity watchdog
+Documentation=https://github.com/armoryworks/forge-deploy
+After=network.target
+# Don't run during shutdown — a "no network" check during shutdown would
+# falsely trigger a reboot loop.
+ConditionPathExists=!/run/systemd/shutdown/scheduled
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/forge-network-watchdog
+# Keep the action local to the script's own decisions; don't kill it mid-reboot.
+KillMode=process
+# Reasonable safety net if the script itself ever hangs (e.g. DNS hang).
+TimeoutStartSec=30s
+# Run as root — needs to call systemctl restart NetworkManager and reboot.
+User=root
+
+# Hardening: only the things we actually need.
+ProtectSystem=strict
+# /var/log: failure log. /run: per-boot fail counter. /var/lib/forge-watchdog:
+# cross-reboot reboot-history file feeding the rate limit (must persist
+# across the reboots it records, hence /var/lib rather than /run).
+ReadWritePaths=/var/log /run /var/lib/forge-watchdog
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=no
+RestrictSUIDSGID=yes

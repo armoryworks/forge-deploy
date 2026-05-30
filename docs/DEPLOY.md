@@ -163,6 +163,30 @@ Setup runs `docker compose pull` and `docker compose up -d`. On a Pi this typica
 - Any image that fails to pull with `unauthorized` — re-check the `docker login ghcr.io` step.
 - Any image that fails with `no matching manifest for linux/arm64` — that image lacks an arm64 build. Flag upstream; this is a packaging bug, not a config one.
 
+### Host network watchdog (installed automatically on Linux)
+
+At the end of the deploy, `setup.sh` installs a small systemd-driven network watchdog at `/usr/local/sbin/forge-network-watchdog`. It runs every minute, pings `1.1.1.1`, `8.8.8.8`, and the host's default gateway, and on persistent failure restarts networking, then reboots the host. This catches the well-known Pi failure mode where the OS stays alive but the NIC firmware hangs (SSH unreachable, Cloudflare tunnel surfaces 530, the router doesn't see the MAC). The hardware watchdog can't recover from this mode because systemd keeps petting it; the layer-3 reachability check is what triggers recovery.
+
+Two safety nets keep the recovery path from making things worse:
+
+- **TCP-connect fallback.** If every ICMP probe fails, the watchdog tries TCP 443 against the public targets before concluding the network is dead. Networks that drop ICMP to public IPs while allowing HTTPS (common on managed / enterprise gateways) therefore don't false-trigger a reboot.
+- **Reboot rate limit.** At most 3 reboots per hour, tracked across reboots in `/var/lib/forge-watchdog/reboot-history`. Beyond that the watchdog keeps restarting networking and logging loudly but stops rebooting — a sustained LAN failure (unplugged cable, dead router over a weekend, dead USB-Ethernet adapter) won't put the box into an indefinite reboot loop that just wears the SD card.
+
+Opt out with `--skip-host-watchdog` to `setup.sh` if a customer has their own host-resilience tooling. To install or reinstall by hand on an existing host:
+
+```bash
+sudo ./scripts/install-host-watchdog.sh
+```
+
+To inspect after install:
+
+```bash
+systemctl status forge-network-watchdog.timer
+systemctl list-timers forge-network-watchdog.timer
+journalctl -u forge-network-watchdog.service --since today
+cat /var/log/network-watchdog.log         # silent on success; only writes on failure
+```
+
 ---
 
 ## 7. Verify the stack

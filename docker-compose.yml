@@ -183,7 +183,10 @@ services:
       - BACKUP_RUN_ON_START=${BACKUP_RUN_ON_START:-false}
       - POSTGRES_HOST=forge
       - POSTGRES_PORT=5432
-      - POSTGRES_DB=${POSTGRES_DB:-forge_db}
+      # Default must match the db service / healthcheck / connection string
+      # (all :-forge). The old :-forge_db meant a .env without POSTGRES_DB made
+      # the backup pg_dump a nonexistent database — a silent backup failure.
+      - POSTGRES_DB=${POSTGRES_DB:-forge}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - MINIO_HOST=forge-storage
