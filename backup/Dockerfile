@@ -13,11 +13,19 @@ FROM postgres:17-alpine
 
 ARG SUPERCRONIC_VERSION=v0.2.29
 
+# TARGETARCH is set automatically by BuildKit (amd64 / arm64) to the build
+# platform — i.e. the host arch on a plain `docker compose build`. supercronic
+# and mc both publish per-arch binaries under those exact names, so this image
+# now builds correctly on both x86_64 and aarch64 hosts (e.g. ARM Pi servers).
+# Fallback derives the arch from uname when TARGETARCH is unset (BuildKit off).
+ARG TARGETARCH
+
 RUN apk add --no-cache bash ca-certificates curl tzdata \
- && curl -fsSL "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-amd64" \
+ && ARCH="${TARGETARCH:-$(case "$(uname -m)" in x86_64) echo amd64 ;; aarch64) echo arm64 ;; *) uname -m ;; esac)}" \
+ && curl -fsSL "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${ARCH}" \
       -o /usr/local/bin/supercronic \
  && chmod +x /usr/local/bin/supercronic \
- && curl -fsSL "https://dl.min.io/client/mc/release/linux-amd64/mc" \
+ && curl -fsSL "https://dl.min.io/client/mc/release/linux-${ARCH}/mc" \
       -o /usr/local/bin/mc \
  && chmod +x /usr/local/bin/mc
 
