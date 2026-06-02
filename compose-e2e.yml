@@ -1,0 +1,98 @@
+# Minimal full-stack subset for the forge-ui Nightly E2E run (issue forge-ui#2).
+#
+# Playwright (run on the GitHub runner, not in a container) drives a real
+# browser against:
+#   - forge-ui  at http://127.0.0.1:4200  (baseURL in e2e/playwright.config.ts)
+#   - forge-api at http://127.0.0.1:5000  (auth.helper.ts posts here directly)
+#
+# The forge-ui container's nginx proxies /api/ and /hubs/ to forge-api:8080,
+# and the production build calls the API via the relative '/api/v1', so the
+# browser talks same-origin to :4200 and the proxy reaches the backend over
+# the compose network. The Playwright `request` context hits :5000 directly.
+#
+# Images are pulled from GHCR (not built) — nightly tests the latest published
+# images, matching the comment in .github/workflows/nightly.yml. Bind to
+# 127.0.0.1 (not 0.0.0.0) so the IPv4 loopback is used: tests connect to
+# ::1/127.0.0.1 and the original stub's `localhost`→::1 resolution on Ubuntu
+# runners was the ECONNREFUSED ::1:5000 root cause.
+#
+# Bring up:   docker compose -f compose-e2e.yml up -d --wait
+# Tear down:  docker compose -f compose-e2e.yml down -v
+
+services:
+  forge:
+    image: pgvector/pgvector:pg17
+    environment:
+      - POSTGRES_DB=forge
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d forge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  forge-storage:
+    image: minio/minio
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  forge-api:
+    image: ghcr.io/armoryworks/forge-api:${SERVER_IMAGE_TAG:-latest}
+    ports:
+      - "127.0.0.1:5000:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      # Ephemeral CI database — recreate + seed demo data so the e2e suite has
+      # known users/fixtures to log in against (auth.helper SEED_PASSWORD).
+      - RECREATE_DB=true
+      - SEED_DEMO_DATA=true
+      - SEED_USER_PASSWORD=Test1234!
+      - ConnectionStrings__DefaultConnection=Host=forge;Port=5432;Database=forge;Username=postgres;Password=postgres
+      - Jwt__Key=e2e-ci-jwt-key-not-a-secret-min-32-chars!!
+      - Jwt__Issuer=forge
+      - Jwt__Audience=forge-ui
+      - Minio__Endpoint=forge-storage:9000
+      - Minio__AccessKey=minioadmin
+      - Minio__SecretKey=minioadmin
+      - Minio__UseSsl=false
+      # Mock all external integrations (AI/USPS/DocuSeal/TTS/SMTP) — none are in
+      # this compose. With mocks the API uses in-memory storage, so minio is
+      # belt-and-suspenders parity with the full stack rather than load-bearing.
+      - MockIntegrations=true
+      - Storage__Provider=minio
+      - FrontendBaseUrl=http://localhost:4200
+    depends_on:
+      forge:
+        condition: service_healthy
+      forge-storage:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      # Generous: first boot runs migrations + demo-data seed on a fresh DB.
+      start_period: 90s
+      retries: 18
+
+  forge-ui:
+    image: ghcr.io/armoryworks/forge-ui:${UI_IMAGE_TAG:-latest}
+    ports:
+      - "127.0.0.1:4200:80"
+    depends_on:
+      forge-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 5
