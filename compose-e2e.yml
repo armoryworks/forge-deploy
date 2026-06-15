@@ -56,6 +56,9 @@ services:
       - RECREATE_DB=true
       - SEED_DEMO_DATA=true
       - SEED_USER_PASSWORD=Test1234!
+      # Force-enable off-by-default features so the capability-aware e2e tests
+      # (leads create, announcement SignalR pub-sub) run instead of skipping.
+      - SEED_ENABLE_CAPABILITIES=CAP-O2C-LEAD,CAP-EXT-ANNOUNCEMENTS
       - ConnectionStrings__DefaultConnection=Host=forge;Port=5432;Database=forge;Username=postgres;Password=postgres
       - Jwt__Key=e2e-ci-jwt-key-not-a-secret-min-32-chars!!
       - Jwt__Issuer=forge
