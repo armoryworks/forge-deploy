@@ -126,7 +126,7 @@ USAGE:
   forge-deploy <tag>                  Deploy a specific tag to this box's components (or --service)
   forge-deploy <tag> --allow-destructive  Pre-approve destructive schema changes during reconcile
                                       (skips the halt+enumerate; only with ENABLE_SCHEMA_RECONCILE=true)
-  forge-deploy --service <name>       Narrow to one service (api | ui | test | all) — scoped to this box
+  forge-deploy --service <name>       Narrow to one service (api | ui | test | demo | all) — scoped to this box
   forge-deploy --components [list]    Show / set this box's components (e.g. --components "ui")
   forge-deploy --wizard               Interactive: REMOVE installed components from this box
                                       (stops+deletes containers, prevents auto-recreate; no start)
@@ -724,7 +724,7 @@ cmd_components() {
       printf 'FORGE_DEPLOY_SERVICES: %s\n' "$cur"
     fi
     printf 'This box deploys:      %s\n' "$(box_service_ids | tr '\n' ' ' | sed 's/ $//')"
-    printf '\n%sValid components: api ui test all%s\n' "${C_DIM}" "${C_RESET}"
+    printf '\n%sValid components: %sall%s\n' "${C_DIM}" "$(all_service_ids | tr '\n' ' ')" "${C_RESET}"
     printf '%sSet with: forge-deploy --components "ui"%s\n' "${C_DIM}" "${C_RESET}"
     return 0
   fi
@@ -734,11 +734,13 @@ cmd_components() {
   local norm token out=""
   norm=$(printf '%s' "$newval" | tr ',' ' ' | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')
   for token in $norm; do
-    case "$token" in
-      all)         out=$(all_service_ids | tr '\n' ' ' | sed 's/ $//'); break ;;
-      api|ui|test) out="${out}${token} " ;;
-      *)           die "Unknown component '$token' (valid: api ui test all)" ;;
-    esac
+    if [[ "$token" == "all" ]]; then
+      out=$(all_service_ids | tr '\n' ' ' | sed 's/ $//'); break
+    elif all_service_ids | grep -qx "$token"; then
+      out="${out}${token} "
+    else
+      die "Unknown component '$token' (valid: $(all_service_ids | tr '\n' ' ')all)"
+    fi
   done
   out=$(printf '%s' "$out" | sed 's/ $//')
   [[ -n "$out" ]] || die "No valid components given"
@@ -1842,19 +1844,22 @@ cmd_rollback() {
 parse_service_arg() {
   # Echoes one or more svc_ids, constrained to this box's component scope.
   local arg="$1"
-  case "$arg" in
-    all)              box_service_ids ;;
-    api|ui|test)
-      # Reject services this box doesn't run, so the API box can't accidentally
-      # deploy the UI (and vice-versa). Declare scope via FORGE_DEPLOY_SERVICES.
-      if box_service_ids | grep -qx "$arg"; then
-        printf '%s\n' "$arg"
-      else
-        die "Service '$arg' is not a component on this box (runs: $(box_scope_label)). Set FORGE_DEPLOY_SERVICES in .env (or: forge-deploy --components $arg) to change."
-      fi
-      ;;
-    *)                die "Unknown --service value: $arg (api|ui|test|all)" ;;
-  esac
+  if [[ "$arg" == "all" ]]; then
+    box_service_ids
+    return
+  fi
+  # Unknown ids are a typo; reject. Valid ids derive from SERVICES, so a new
+  # service (e.g. demo) is accepted here automatically.
+  if ! all_service_ids | grep -qx "$arg"; then
+    die "Unknown --service value: $arg (valid: $(all_service_ids | tr '\n' ' ')all)"
+  fi
+  # Reject services this box doesn't run, so the API box can't accidentally
+  # deploy the UI/demo (and vice-versa). Declare scope via FORGE_DEPLOY_SERVICES.
+  if box_service_ids | grep -qx "$arg"; then
+    printf '%s\n' "$arg"
+  else
+    die "Service '$arg' is not a component on this box (runs: $(box_scope_label)). Set FORGE_DEPLOY_SERVICES in .env (or: forge-deploy --components $arg) to change."
+  fi
 }
 
 main() {
@@ -1922,7 +1927,7 @@ main() {
         ;;
       --self-update)     mode="self-update"; shift ;;
       --service)
-        [[ $# -ge 2 ]] || die "--service requires a value (api|ui|test|all)"
+        [[ $# -ge 2 ]] || die "--service requires a value (api|ui|test|demo|all)"
         service_arg="$2"; shift 2 ;;
       --service=*)       service_arg="${1#*=}"; shift ;;
       --allow-destructive) ALLOW_DESTRUCTIVE=true; shift ;;
