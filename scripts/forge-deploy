@@ -122,6 +122,8 @@ USAGE:
   forge-deploy                        No args: first run -> setup wizard; configured box -> pick a
                                       version per component (Enter keeps current, r=re-setup, q=quit)
   forge-deploy <tag>                  Deploy a specific tag to this box's components (or --service)
+  forge-deploy <tag> --allow-destructive  Pre-approve destructive schema changes during reconcile
+                                      (skips the halt+enumerate; only with ENABLE_SCHEMA_RECONCILE=true)
   forge-deploy --service <name>       Narrow to one service (api | ui | test | all) — scoped to this box
   forge-deploy --components [list]    Show / set this box's components (e.g. --components "ui")
   forge-deploy --wizard               Interactive: REMOVE installed components from this box
@@ -1576,6 +1578,125 @@ pick_tag_interactive() {
   printf '%s\n' "${tag_array[$(( choice - 1 ))]}"
 }
 
+# ─────────────────────────────────────────────────────────────
+# Schema reconcile (forge-db)
+# ─────────────────────────────────────────────────────────────
+# Applies the pinned forge-db schema to the LIVE database before the forge-api
+# image is swapped, so the schema reaches the new version's expectations (the
+# app's own SchemaBootstrapper is a no-op on an existing DB). Off by default;
+# enable per box with ENABLE_SCHEMA_RECONCILE=true + SCHEMA_IMAGE_TAG=<tag>.
+# Additive changes auto-apply after a fresh backup; destructive changes HALT and
+# are enumerated for operator disposition unless --allow-destructive is passed.
+
+# The docker network the live 'forge' postgres container is on, so the one-shot
+# forge-db container can reach it by service name.
+reconcile_network() {
+  local cid
+  cid=$(compose ps -q forge 2>/dev/null || true)
+  [[ -n "$cid" ]] || return 1
+  docker inspect "$cid" \
+    --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null \
+    | awk '{print $1}'
+}
+
+reconcile_db_url() {
+  local h p d u w
+  h=$(env_get DB_HOST);            h="${h:-forge}"
+  p=$(env_get DB_PORT);            p="${p:-5432}"
+  d=$(env_get POSTGRES_DB);        d="${d:-forge}"
+  u=$(env_get POSTGRES_USER);      u="${u:-postgres}"
+  w=$(env_get POSTGRES_PASSWORD);  w="${w:-postgres}"
+  printf 'postgres://%s:%s@%s:%s/%s' "$u" "$w" "$h" "$p" "$d"
+}
+
+# Run a forge-db verb in a one-shot container on the DB network.
+#   reconcile_forge_db <net> <image> <verb> [extra args...]
+reconcile_forge_db() {
+  local net="$1" image="$2"; shift 2
+  docker run --rm --network "$net" "$image" "$@" --db "$(reconcile_db_url)"
+}
+
+# Pull destructive DDL out of a `forge-db plan` rendering and present it numbered
+# for the operator's disposition (the agreed ok-to-drop / can't-until / cannot form).
+enumerate_destructive() {
+  local plan_text="$1" n=0 line
+  warn "Destructive changes requiring your disposition:"
+  while IFS= read -r line; do
+    if printf '%s' "$line" | grep -qiE '\bDROP[[:space:]]+(TABLE|COLUMN|CONSTRAINT|INDEX|VIEW|SCHEMA|TYPE|SEQUENCE)\b|\bDROP[[:space:]]+NOT[[:space:]]+NULL\b|ALTER[[:space:]]+COLUMN[[:space:]].*[[:space:]]TYPE[[:space:]]'; then
+      n=$((n+1))
+      printf '      %s%d%s - %s\n' "${C_RED}" "$n" "${C_RESET}" "$(printf '%s' "$line" | sed 's/^[[:space:]]*//')"
+    fi
+  done <<< "$plan_text"
+  (( n == 0 )) && printf '      (see the forge-db output above for the flagged statements)\n'
+  printf '\n      For each, reply: 1 - ok to delete / 2 - cannot until x,y,z / 3 - cannot delete\n'
+}
+
+# Reconcile the live schema before the app swap. Returns 0 to proceed, 1 to abort.
+reconcile_schema() {
+  local enabled schema_tag net image
+  enabled=$(env_get ENABLE_SCHEMA_RECONCILE | tr -d '[:space:]')
+  if [[ "$enabled" != "true" ]]; then
+    ok "Schema reconcile disabled (ENABLE_SCHEMA_RECONCILE != true) — skipping"
+    return 0
+  fi
+
+  schema_tag=$(env_get SCHEMA_IMAGE_TAG | tr -d '[:space:]')
+  if [[ -z "$schema_tag" ]]; then
+    err "ENABLE_SCHEMA_RECONCILE=true but SCHEMA_IMAGE_TAG is not set in .env"
+    return 1
+  fi
+  image="${REGISTRY_HOST}/${REGISTRY_OWNER}/forge-db:${schema_tag}"
+
+  net=$(reconcile_network) || true
+  if [[ -z "$net" ]]; then
+    err "Could not find the DB container network (is the 'forge' service running?)"
+    return 1
+  fi
+
+  step "Schema reconcile (forge-db ${schema_tag})"
+
+  step "  Taking a fresh pre-reconcile backup"
+  if ! compose exec -T forge-backup /usr/local/bin/backup.sh; then
+    err "Pre-reconcile backup failed — aborting (nothing applied, app NOT swapped)"
+    return 1
+  fi
+  ok "Backup complete"
+
+  docker pull "$image" >/dev/null 2>&1 || true
+
+  local allow="${ALLOW_DESTRUCTIVE:-false}" out rc=0
+  step "  Applying schema"
+  out=$(reconcile_forge_db "$net" "$image" apply --env prod --yes --backup-taken 2>&1) || rc=$?
+  printf '%s\n' "$out" | sed 's/^/      /'
+
+  if (( rc == 0 )); then
+    ok "Schema reconciled (additive / already in sync)"
+    return 0
+  fi
+
+  # Exit 3 = DeployGates blocked a destructive plan (forge-db ApplyCommand).
+  if (( rc == 3 )); then
+    if [[ "$allow" == "true" ]]; then
+      warn "Destructive changes present — re-applying with --allow-destructive (operator-approved)"
+      if reconcile_forge_db "$net" "$image" apply --env prod --yes --backup-taken --allow-destructive; then
+        ok "Schema reconciled (destructive changes applied with approval)"
+        return 0
+      fi
+      err "Apply failed even with --allow-destructive — aborting"
+      return 1
+    fi
+    err "DESTRUCTIVE schema changes detected — deploy HALTED. Nothing applied; app NOT swapped."
+    printf '\n'
+    enumerate_destructive "$(reconcile_forge_db "$net" "$image" plan 2>&1 || true)"
+    printf '\n'
+    err "Re-run the deploy with --allow-destructive once the items above are dispositioned."
+    return 1
+  fi
+
+  err "Schema reconcile failed (forge-db exit ${rc}) — aborting before the app swap"
+  return 1
+}
+
 # Deploy a single service to a single tag.
 deploy_service() {
   local svc_id="$1" target_tag="$2"
@@ -1612,6 +1733,17 @@ deploy_service() {
     return 1
   fi
   ok "Image pulled"
+
+  # Reconcile the live DB schema to the pinned forge-db BEFORE swapping the app
+  # (api only). A halt (destructive) or failure reverts the .env pin and returns
+  # without ever recreating the container — the running app and DB are untouched.
+  if [[ "$svc_id" == "api" ]]; then
+    if ! reconcile_schema; then
+      env_set "$envvar" "$prior_tag"
+      log_event "$svc_id" "$prior_tag" "$target_tag" "schema-reconcile-failed"
+      return 1
+    fi
+  fi
 
   # --force-recreate: a previous failed `up -d` (e.g. port collision) can
   # leave a container in a half-started state without published port
@@ -1791,6 +1923,7 @@ main() {
         [[ $# -ge 2 ]] || die "--service requires a value (api|ui|test|all)"
         service_arg="$2"; shift 2 ;;
       --service=*)       service_arg="${1#*=}"; shift ;;
+      --allow-destructive) ALLOW_DESTRUCTIVE=true; shift ;;
       -*)                die "Unknown option: $1 (try --help)" ;;
       *)
         if [[ -n "$positional" ]]; then
