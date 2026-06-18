@@ -28,6 +28,41 @@ services:
           memory: 256M
     restart: unless-stopped
 
+  forge-demo:
+    # Public modular demo SPA (forge-ui/Dockerfile.demo) — the API-less Angular
+    # bundle the demoApiInterceptor serves entirely from static JSON. Standalone:
+    # no API, DB, or storage dependency. Build context is the forge-ui repo root
+    # (sibling of this deploy repo on the dev workstation); on the UI box this
+    # service is sourced via docker-compose.prod.yml (image: from GHCR) — the
+    # build: block is for local dev / CI build verification.
+    #
+    # profiles: [demo] keeps it OFF on every box unless that box opts in via
+    # COMPOSE_PROFILES, so adding it here is inert for the API/AP boxes.
+    build:
+      context: ../forge-ui
+      dockerfile: Dockerfile.demo
+      args:
+        BUILD_VERSION: ${BUILD_VERSION:-demo}
+        BUILD_SHA: ${BUILD_SHA:-demo}
+    container_name: forge-demo
+    ports:
+      - "${DEMO_BIND:-127.0.0.1}:${DEMO_PORT:-4204}:80"
+    healthcheck:
+      # 127.0.0.1 (not localhost): nginx listens IPv4-only; localhost can resolve
+      # to IPv6 [::1] first in some envs and flap the container unhealthy.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    profiles:
+      - demo
+    restart: unless-stopped
+
   forge-test:
     # Public-facing test/demo SPA (forge-test repo, test-bed/).
     # Build context is the forge-test repo root (sibling of this

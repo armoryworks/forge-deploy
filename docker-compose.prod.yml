@@ -34,6 +34,12 @@ services:
     labels:
       forge.deploy-mode: "prod"
 
+  forge-demo:
+    image: ghcr.io/armoryworks/forge-demo:${DEMO_IMAGE_TAG:-latest}
+    build: !reset null
+    labels:
+      forge.deploy-mode: "prod"
+
   forge-test:
     image: ghcr.io/armoryworks/forge-test:${TEST_IMAGE_TAG:-latest}
     build: !reset null

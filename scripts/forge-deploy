@@ -49,6 +49,7 @@ readonly SERVICES=(
   "api|forge-api|forge-api|SERVER_IMAGE_TAG|http:/api/v1/health"
   "ui|forge-ui|forge-ui|UI_IMAGE_TAG|docker"
   "test|forge-test|forge-test|TEST_IMAGE_TAG|docker"
+  "demo|forge-demo|forge-demo|DEMO_IMAGE_TAG|docker"
 )
 
 # Full stack roster for the component wizard: compose_service|group|svc_id|label
@@ -62,6 +63,7 @@ readonly STACK_SERVICES=(
   "forge-storage|backend|-|Object storage — MinIO"
   "forge-backup|backend|-|DB backup sidecar"
   "forge-ui|frontend|ui|Web UI — Angular/nginx"
+  "forge-demo|frontend|demo|Public demo SPA [profile: demo]"
   "forge-test|test|test|Public test/demo SPA [profile: test]"
   "forge-ai|optional|-|AI — Ollama [profile: ai]"
   "forge-ai-init|optional|-|AI model init [profile: ai]"
