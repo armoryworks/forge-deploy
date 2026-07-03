@@ -20,6 +20,10 @@ readonly BUNDLE_STATE="${STATE_DIR}/bundle-state"          # last-applied monoto
 readonly TRUST_ANCHOR="${FORGE_RELEASE_PUBKEY:-${STATE_DIR}/keys/forge-release.pub}"
 readonly REGISTRY_OWNER="armoryworks"
 readonly IMAGES=("forge-api" "forge-ui" "forge-test")      # TODO: resolve digest-pinned tags
+readonly PG_SERVICE="${FORGE_PG_SERVICE:-forge}"          # docker container running Postgres
+readonly PG_USER="${POSTGRES_USER:-postgres}"
+readonly PG_DB="${POSTGRES_DB:-forge}"
+readonly BACKUP_DIR="${FORGE_BACKUP_DIR:-/var/backups/forge}"
 
 # ── output helpers (mirror forge-deploy) ────────────────────────────────────
 readonly C_CYAN=$'\033[36m' C_GREEN=$'\033[32m' C_YELLOW=$'\033[33m' C_RED=$'\033[31m' C_RESET=$'\033[0m'
@@ -124,40 +128,57 @@ cmd_apply() {
     || die "SIGNATURE INVALID — refusing bundle"
   ok "signature valid"
 
-  # 2. checksums (docker load verifies nothing — this gate is mandatory)
+  # 2. checksums (docker load verifies nothing — this gate is mandatory). jq-free so it
+  #    works on minimal air-gapped hosts: pull path+sha256 in document order and pair them.
   step "2/7 Verify checksums"
-  # TODO: parse MANIFEST.json with jq if available; skeleton assumes jq
-  require_cmd jq
-  while read -r path sum; do
+  local mpaths msums
+  mpaths="$(grep -oE '"path"[[:space:]]*:[[:space:]]*"[^"]*"' "$work/MANIFEST.json" | sed -E 's/.*"([^"]+)"$/\1/')"
+  msums="$(grep -oE '"sha256"[[:space:]]*:[[:space:]]*"[^"]*"' "$work/MANIFEST.json" | sed -E 's/.*"([^"]+)"$/\1/')"
+  while read -r path <&3 && read -r sum <&4; do
+    [[ -n "$path" ]] || continue
     local got; got="$(sha256sum "$work/$path" | awk '{print $1}')"
     [[ "$got" == "$sum" ]] || die "CHECKSUM MISMATCH: $path"
-  done < <(jq -r '.artifacts[] | "\(.path) \(.sha256)"' "$work/MANIFEST.json")
+  done 3<<<"$mpaths" 4<<<"$msums"
   ok "all artifacts match"
 
   # 3. anti-rollback (monotonic; clock-free)
   step "3/7 Anti-rollback"
   local incoming installed
-  incoming="$(jq -r '.bundleVersion' "$work/MANIFEST.json")"
+  incoming="$(grep -oE '"bundleVersion"[[:space:]]*:[[:space:]]*[0-9]+' "$work/MANIFEST.json" | grep -oE '[0-9]+' | head -1)"
+  [[ -n "$incoming" ]] || die "MANIFEST.json missing bundleVersion"
   installed="$(cat "$BUNDLE_STATE" 2>/dev/null || echo 0)"
   [[ "$incoming" -gt "$installed" ]] || die "REFUSED: bundle $incoming <= installed $installed (rollback/replay)"
   ok "version $incoming > installed $installed"
 
-  # 4. backup (the real rollback net)
+  # 4. backup (the real rollback net) — abort the whole apply if it fails
   step "4/7 Backup database"
-  # TODO: invoke forge-backup sidecar or pg_dump; abort on failure
-  warn "backup not wired (TODO) — do NOT run destructive migrations until wired"
+  mkdir -p "$BACKUP_DIR"
+  local backup_file="$BACKUP_DIR/pre-bundle-${incoming}.sql.gz"
+  if docker exec "$PG_SERVICE" pg_dump -U "$PG_USER" "$PG_DB" 2>/dev/null | gzip > "$backup_file" && [[ -s "$backup_file" ]]; then
+    ok "backup → $backup_file"
+  else
+    rm -f "$backup_file"; die "backup failed — aborting before load/migrate"
+  fi
 
   # 5. load images
   step "5/7 Load images"
   for tar in "$work"/images/*.tar; do docker load -i "$tar"; done
   ok "images loaded"
 
-  # 6. migrate
+  # 6. migrate — each file single-transaction (atomic); files named *destructive* need the flag
   step "6/7 Apply migrations"
   if compgen -G "$work/migrations/*.sql" >/dev/null; then
-    # TODO: wrap in a transaction for Postgres; gate destructive steps on the flag
-    [[ "$allow_destructive" -eq 1 ]] || warn "destructive steps blocked (pass --allow-destructive)"
-    warn "migration apply not wired (TODO)"
+    local sql
+    for sql in "$work"/migrations/*.sql; do
+      case "$(basename "$sql")" in
+        *destructive*) [[ "$allow_destructive" -eq 1 ]] || { warn "skipping destructive $(basename "$sql") — pass --allow-destructive"; continue; } ;;
+      esac
+      if docker exec -i "$PG_SERVICE" psql -v ON_ERROR_STOP=1 --single-transaction -U "$PG_USER" -d "$PG_DB" < "$sql" >/dev/null; then
+        ok "applied $(basename "$sql")"
+      else
+        die "migration failed: $(basename "$sql") — restore from $BACKUP_DIR and investigate"
+      fi
+    done
   else
     ok "no migrations in bundle"
   fi
