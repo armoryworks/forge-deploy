@@ -260,6 +260,70 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1 (run scripts/install-forge-deploy.sh)"
 }
 
+# Probe TCP reachability of host:port with a short timeout, using whatever
+# portable tool exists (nc, else `timeout`+bash /dev/tcp, else bare /dev/tcp).
+# Returns 0 reachable, 1 unreachable. The caller (check_remote_reachable) is
+# responsible for the no-probe-tool degradation so it never hard-blocks.
+tcp_reachable() {
+  local host="$1" port="$2" timeout_s="${3:-4}"
+  if command -v nc >/dev/null 2>&1; then
+    nc -z -w "$timeout_s" "$host" "$port" >/dev/null 2>&1 && return 0 || return 1
+  fi
+  # bash /dev/tcp — wrap in `timeout` when available so a black-holed host can't
+  # hang the deploy; without `timeout`, the connect still fails fast on refusal.
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$timeout_s" bash -c ": >/dev/tcp/${host}/${port}" >/dev/null 2>&1 && return 0 || return 1
+  fi
+  ( : >"/dev/tcp/${host}/${port}" ) >/dev/null 2>&1 && return 0
+  # Distinguish "connect failed" from "/dev/tcp unsupported": if the shell has
+  # /dev/tcp support a refusal is a real 1; assume support on bash and report 1.
+  return 1
+}
+
+# Pre-deploy reachability gate for split topology. Verifies the remote Postgres
+# (and MinIO endpoint, if given) accept TCP before we pull/recreate anything.
+# Best-effort: if no probe tool exists we warn and continue. Local DB (host
+# unset/empty/'forge') is a no-op so single-box/api+db paths are untouched.
+#   check_remote_reachable [db_host] [db_port] [minio_endpoint]
+# With no args it reads DB_HOST/DB_PORT/MINIO_ENDPOINT from .env.
+check_remote_reachable() {
+  local dbh="${1:-}" dbp="${2:-}" minio="${3:-}"
+  [[ -n "$dbh" ]] || dbh=$(env_get DB_HOST | tr -d '[:space:]')
+  [[ -n "$dbp" ]] || dbp=$(env_get DB_PORT | tr -d '[:space:]')
+  [[ -n "$minio" ]] || minio=$(env_get MINIO_ENDPOINT | tr -d '[:space:]')
+
+  # Local DB (or unset) — nothing remote to probe.
+  [[ -n "$dbh" && "$dbh" != "forge" ]] || return 0
+  dbp="${dbp:-5432}"
+
+  if ! command -v nc >/dev/null 2>&1 && ! command -v timeout >/dev/null 2>&1; then
+    warn "No nc/timeout to probe ${dbh}:${dbp} — skipping reachability check (continuing)"
+    return 0
+  fi
+
+  local rc=0
+  step "Checking remote reachability before deploy"
+  if tcp_reachable "$dbh" "$dbp"; then
+    ok "Postgres ${dbh}:${dbp} reachable"
+  else
+    err "Postgres ${dbh}:${dbp} not reachable (is the db box up + LAN-published?)"
+    rc=1
+  fi
+
+  # Only probe MinIO when it's a real remote endpoint (not the local default).
+  if [[ -n "$minio" && "$minio" != forge-storage:* ]]; then
+    local mh mp
+    mh="${minio%%:*}"; mp="${minio##*:}"; [[ "$mp" == "$minio" ]] && mp="9000"
+    if tcp_reachable "$mh" "$mp"; then
+      ok "MinIO ${mh}:${mp} reachable"
+    else
+      err "MinIO ${mh}:${mp} not reachable (is MinIO up + LAN-published on the db box?)"
+      rc=1
+    fi
+  fi
+  return "$rc"
+}
+
 preflight() {
   require_cmd docker
   require_cmd curl
@@ -1013,7 +1077,7 @@ cmd_remote_db() {
 
   if [[ "$pg" == "off" || "$pg" == "clear" ]]; then
     local tmp; tmp=$(mktemp)
-    grep -vE '^(DB_HOST|DB_PORT|MINIO_ENDPOINT)=' "$ENV_FILE" > "$tmp" && mv "$tmp" "$ENV_FILE"
+    grep -vE '^(DB_HOST|DB_PORT|MINIO_ENDPOINT|MINIO_HOST|MINIO_PORT)=' "$ENV_FILE" > "$tmp" && mv "$tmp" "$ENV_FILE"
     ok "Reverted to local DB/MinIO (forge / forge-storage)"
     return 0
   fi
@@ -1023,9 +1087,25 @@ cmd_remote_db() {
   env_set DB_HOST "$host"
   env_set DB_PORT "$port"
   ok "forge-api -> Postgres ${host}:${port}"
+  # Fail fast BEFORE any redeploy if the remote DB (and MinIO, if given) is
+  # unreachable — non-destructive: nothing has been recreated yet. During
+  # --setup (SETUP_QUIET=1) the db box may legitimately not be up yet, so we
+  # only warn there; the real gate is the pre-deploy check in deploy_service.
+  if ! check_remote_reachable "$host" "$port" "$minio"; then
+    if [[ -n "${SETUP_QUIET:-}" ]]; then
+      warn "Remote DB/MinIO not reachable yet — wiring config anyway; the deploy will re-check"
+    else
+      die "Remote DB/MinIO not reachable — fix connectivity (or the db box) and retry"
+    fi
+  fi
   if [[ -n "$minio" ]]; then
     [[ "$minio" == *:* ]] || minio="${minio}:9000"
     env_set MINIO_ENDPOINT "$minio"
+    # The backup sidecar reads MINIO_HOST/MINIO_PORT (not MINIO_ENDPOINT), and
+    # compose interpolation can't split host:port — so mirror the endpoint into
+    # the split vars the sidecar consumes.
+    env_set MINIO_HOST "${minio%%:*}"
+    env_set MINIO_PORT "${minio##*:}"
     ok "forge-api -> MinIO ${minio}"
   fi
   printf '\n%sNote:%s POSTGRES_USER/PASSWORD/DB and MINIO_ROOT_USER/PASSWORD in this .env\n' "${C_YELLOW}" "${C_RESET}"
@@ -1644,6 +1724,16 @@ reconcile_schema() {
     return 0
   fi
 
+  # Split topology: on a remote-DB api box the 'forge' postgres container is on
+  # the db box, not this compose network — reconcile there. Skip (don't fail) so
+  # the api deploy proceeds; the db box owns schema apply. Local (DB_HOST unset
+  # or 'forge') is unchanged and still reconciles.
+  local dbh; dbh=$(env_get DB_HOST | tr -d '[:space:]')
+  if [[ -n "$dbh" && "$dbh" != "forge" ]]; then
+    warn "DB is remote (${dbh}) — schema apply must run on the DB box; skipping reconcile here"
+    return 0
+  fi
+
   schema_tag=$(env_get SCHEMA_IMAGE_TAG | tr -d '[:space:]')
   if [[ -z "$schema_tag" ]]; then
     err "ENABLE_SCHEMA_RECONCILE=true but SCHEMA_IMAGE_TAG is not set in .env"
@@ -1719,6 +1809,17 @@ deploy_service() {
   fi
 
   step "Deploying $svc_id -> $target_tag"
+
+  # Split topology: an api box with a remote DB must be able to reach it before
+  # we pull/recreate. Fail fast + non-destructively (nothing swapped yet). A
+  # no-op for local DB, so single-box/api+db deploys are unchanged.
+  if [[ "$svc_id" == "api" ]]; then
+    if ! check_remote_reachable; then
+      err "Remote DB/MinIO unreachable — aborting before touching the running app"
+      log_event "$svc_id" "$prior_tag" "$target_tag" "remote-db-unreachable"
+      return 1
+    fi
+  fi
 
   if ! ghcr_tag_exists "$repo" "$target_tag"; then
     err "Tag not found in GHCR: ${REGISTRY_OWNER}/${repo}:${target_tag}"
