@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# forge-bundle — build & apply signed air-gap update bundles for Forge.
+#
+# SKELETON (2026-07-02): structure + fail-closed control flow are in place, but
+# integration points marked TODO need wiring and this has NOT been tested end to
+# end. Design: docs/airgap-bundle.md. Intended to later fold into the forge-deploy
+# CLI as cmd_bundle / cmd_apply_bundle.
+#
+# Principle: authenticity over confidentiality — a SIGNED bundle verified on import
+# (cosign), on any media. Encryption of the media is an optional, separate concern.
+#
+# Bash conventions (match scripts/forge-deploy):
+#   set -euo pipefail · quote all vars · [[ ]] over [ ] · trap cleanup · cmd_* subcommands
+
+set -euo pipefail
+
+readonly FORGE_BUNDLE_VERSION="0.1.0-skeleton"
+readonly STATE_DIR="${FORGE_STATE_DIR:-/etc/forge}"
+readonly BUNDLE_STATE="${STATE_DIR}/bundle-state"          # last-applied monotonic version
+readonly TRUST_ANCHOR="${FORGE_RELEASE_PUBKEY:-${STATE_DIR}/keys/forge-release.pub}"
+readonly REGISTRY_OWNER="armoryworks"
+readonly IMAGES=("forge-api" "forge-ui" "forge-test")      # TODO: resolve digest-pinned tags
+
+# ── output helpers (mirror forge-deploy) ────────────────────────────────────
+readonly C_CYAN=$'\033[36m' C_GREEN=$'\033[32m' C_YELLOW=$'\033[33m' C_RED=$'\033[31m' C_RESET=$'\033[0m'
+step() { printf '%s==> %s%s\n' "${C_CYAN}" "$1" "${C_RESET}"; }
+ok()   { printf '    %s[OK]%s %s\n' "${C_GREEN}" "${C_RESET}" "$1"; }
+warn() { printf '    %s[!!]%s %s\n' "${C_YELLOW}" "${C_RESET}" "$1"; }
+err()  { printf '    %s[XX]%s %s\n' "${C_RED}" "${C_RESET}" "$1" >&2; }
+die()  { err "$1"; exit "${2:-1}"; }
+require_cmd() { command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"; }
+
+usage() {
+  cat <<'EOF'
+forge-bundle — build & apply signed air-gap update bundles
+
+  forge-bundle build --version <N> --key <release.key> --out <dir>
+      Assemble images + migrations + seeds + config, checksum, and cosign-sign
+      the manifest. Run on an internet-connected build host.
+
+  forge-bundle apply <bundle.tar> [--allow-destructive]
+      Verify → anti-rollback → backup → load → migrate → record. Fail-closed.
+      Run on the air-gapped box.
+
+  forge-bundle --help
+EOF
+}
+
+# ── build side (internet-connected) ─────────────────────────────────────────
+cmd_build() {
+  local version="" key="" out=""
+  while [[ $# -gt 0 ]]; do case "$1" in
+    --version) version="$2"; shift 2;;
+    --key)     key="$2";     shift 2;;
+    --out)     out="$2";     shift 2;;
+    *) die "unknown build arg: $1";;
+  esac; done
+  [[ -n "$version" && -n "$key" && -n "$out" ]] || die "build needs --version, --key, --out"
+  require_cmd docker; require_cmd cosign; require_cmd sha256sum
+
+  local work; work="$(mktemp -d)"; trap 'rm -rf "$work"' RETURN
+  mkdir -p "$work"/{images,migrations,seeds,config,bin}
+
+  step "Exporting images"
+  for img in "${IMAGES[@]}"; do
+    # TODO: pin to an immutable digest, not a floating tag
+    docker save "ghcr.io/${REGISTRY_OWNER}/${img}" -o "$work/images/${img}.tar"
+    ok "${img}"
+  done
+
+  step "Generating migration SQL (offline)"
+  # TODO: emit idempotent SQL without a live DB (EF idempotent script / Liquibase
+  #       update-sql / Alembic --sql) into $work/migrations/
+  warn "migration generation not wired (TODO)"
+
+  # TODO: populate $work/seeds (feeds compliance-calendar A-5 seed refresh) and $work/config
+  cp "$(command -v cosign)" "$work/bin/cosign" 2>/dev/null || warn "cosign binary not bundled"
+
+  step "Writing MANIFEST.json"
+  {
+    printf '{\n  "bundleVersion": %s,\n  "createdBy": "forge-bundle/%s",\n  "artifacts": [\n' \
+      "$version" "$FORGE_BUNDLE_VERSION"
+    local first=1
+    while IFS= read -r -d '' f; do
+      local rel; rel="${f#"$work"/}"
+      local sum; sum="$(sha256sum "$f" | awk '{print $1}')"
+      [[ $first -eq 1 ]] || printf ',\n'; first=0
+      printf '    { "path": "%s", "sha256": "%s" }' "$rel" "$sum"
+    done < <(find "$work" -type f \( -path '*/images/*' -o -path '*/migrations/*' -o -path '*/seeds/*' -o -path '*/config/*' \) -print0 | sort -z)
+    printf '\n  ]\n}\n'
+  } > "$work/MANIFEST.json"
+
+  step "Signing manifest (cosign)"
+  cosign sign-blob --yes --key "$key" --output-signature "$work/MANIFEST.json.sig" "$work/MANIFEST.json" \
+    || die "cosign sign-blob failed"
+
+  step "Packing bundle"
+  mkdir -p "$out"
+  local tarball="$out/forge-bundle-${version}.tar"
+  tar -C "$work" -cf "$tarball" .
+  ok "wrote $tarball"
+}
+
+# ── apply side (air-gapped) — FAIL-CLOSED ───────────────────────────────────
+cmd_apply() {
+  local bundle="" allow_destructive=0
+  while [[ $# -gt 0 ]]; do case "$1" in
+    --allow-destructive) allow_destructive=1; shift;;
+    *) bundle="$1"; shift;;
+  esac; done
+  [[ -n "$bundle" && -f "$bundle" ]] || die "apply needs a bundle tar path"
+  require_cmd sha256sum; require_cmd docker
+
+  local work; work="$(mktemp -d)"; trap 'rm -rf "$work"' RETURN
+  tar -C "$work" -xf "$bundle"
+  local cosign_bin; cosign_bin="$(command -v cosign || echo "$work/bin/cosign")"
+  [[ -x "$cosign_bin" ]] || die "no cosign available to verify"
+
+  # 1. signature (trust anchor = PRE-INSTALLED key, not the bundled copy)
+  step "1/7 Verify signature"
+  [[ -f "$TRUST_ANCHOR" ]] || die "trust anchor missing: $TRUST_ANCHOR"
+  "$cosign_bin" verify-blob --key "$TRUST_ANCHOR" \
+    --signature "$work/MANIFEST.json.sig" --insecure-ignore-tlog "$work/MANIFEST.json" \
+    || die "SIGNATURE INVALID — refusing bundle"
+  ok "signature valid"
+
+  # 2. checksums (docker load verifies nothing — this gate is mandatory)
+  step "2/7 Verify checksums"
+  # TODO: parse MANIFEST.json with jq if available; skeleton assumes jq
+  require_cmd jq
+  while read -r path sum; do
+    local got; got="$(sha256sum "$work/$path" | awk '{print $1}')"
+    [[ "$got" == "$sum" ]] || die "CHECKSUM MISMATCH: $path"
+  done < <(jq -r '.artifacts[] | "\(.path) \(.sha256)"' "$work/MANIFEST.json")
+  ok "all artifacts match"
+
+  # 3. anti-rollback (monotonic; clock-free)
+  step "3/7 Anti-rollback"
+  local incoming installed
+  incoming="$(jq -r '.bundleVersion' "$work/MANIFEST.json")"
+  installed="$(cat "$BUNDLE_STATE" 2>/dev/null || echo 0)"
+  [[ "$incoming" -gt "$installed" ]] || die "REFUSED: bundle $incoming <= installed $installed (rollback/replay)"
+  ok "version $incoming > installed $installed"
+
+  # 4. backup (the real rollback net)
+  step "4/7 Backup database"
+  # TODO: invoke forge-backup sidecar or pg_dump; abort on failure
+  warn "backup not wired (TODO) — do NOT run destructive migrations until wired"
+
+  # 5. load images
+  step "5/7 Load images"
+  for tar in "$work"/images/*.tar; do docker load -i "$tar"; done
+  ok "images loaded"
+
+  # 6. migrate
+  step "6/7 Apply migrations"
+  if compgen -G "$work/migrations/*.sql" >/dev/null; then
+    # TODO: wrap in a transaction for Postgres; gate destructive steps on the flag
+    [[ "$allow_destructive" -eq 1 ]] || warn "destructive steps blocked (pass --allow-destructive)"
+    warn "migration apply not wired (TODO)"
+  else
+    ok "no migrations in bundle"
+  fi
+
+  # 7. record (atomic) + bring up
+  step "7/7 Record version"
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$incoming" > "$BUNDLE_STATE.tmp" && mv -f "$BUNDLE_STATE.tmp" "$BUNDLE_STATE"
+  ok "recorded bundle version $incoming"
+  # TODO: hand off to the normal healthcheck-gated compose bring-up (forge-deploy)
+}
+
+main() {
+  local cmd="${1:-}"; shift || true
+  case "$cmd" in
+    build)        cmd_build "$@";;
+    apply)        cmd_apply "$@";;
+    -h|--help|"") usage;;
+    *) usage; die "unknown command: $cmd";;
+  esac
+}
+main "$@"
