@@ -71,6 +71,14 @@ All four URLs should return a non-error HTTP status (200, 404, or 405 are all fi
 
 ## 3. Install Docker and dependencies
 
+> **Use apt Docker, NOT the snap.** Install Docker via `apt` (`docker.io`, or Docker CE from
+> docs.docker.com) — **never `snap install docker`**. The snap daemon runs under an AppArmor profile
+> that can't write a container's cgroup-v2 `cgroup.kill`, so `docker stop`/`rm`/`compose up --build`
+> on a running container fail with `could not kill container: permission denied` — teardown/recreate
+> is broken, which cripples both the dev loop and deploys. `setup.sh` hard-fails if it detects the
+> snap on cgroup v2; the full write-up is in [TROUBLESHOOTING.md](TROUBLESHOOTING.md) → Host setup.
+> If a box already has the snap: back up any volumes, `sudo snap remove docker`, then install via apt.
+
 Ubuntu 24.04 names the compose plugin `docker-compose-v2`, **not** `docker-compose-plugin` (which is the upstream Docker name). Don't waste time fighting `apt`:
 
 ```bash
@@ -86,6 +94,8 @@ docker --version
 docker compose version
 git --version
 groups | grep -q docker && echo OK
+# Sanity-check you're NOT on the snap (should print an apt path, not /var/snap/docker/...):
+docker info --format 'Docker root: {{.DockerRootDir}}'
 ```
 
 ---

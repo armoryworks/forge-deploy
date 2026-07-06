@@ -8,6 +8,39 @@ If you've hit something not in this list, add it. The cost of writing the entry 
 
 ## Host setup (Pi 5 / Ubuntu Server arm64)
 
+### `docker stop` / `compose up` fails with "could not kill container: permission denied" (snap Docker + cgroup v2)
+
+**Symptom**: On a host where Docker was installed via **snap**, `docker compose up -d`, `docker stop`, or `docker rm` on a **running** container fails with:
+
+```
+Error response from daemon: cannot stop container <id>: could not kill container: permission denied
+```
+
+`docker build`, `docker exec`, `docker ps`, and `docker inspect` all work — only stopping/killing/recreating a *running* container fails. `forge-api`'s Testcontainers-backed integration tests (`dotnet test`) pass their assertions but fail at **teardown** with the same error. This blocks any local rebuild-and-restart of a service (`docker compose up -d --build forge-api`, etc.).
+
+**Cause**: The snap-packaged Docker daemon runs under an AppArmor profile (`snap.docker.dockerd`) whose cgroup rules target the **cgroupfs / cgroup-v1 layout** (`/sys/fs/cgroup/*/docker/**`). On a host with **cgroup v2 + the systemd cgroup driver** (Docker's default there), containers live at `/sys/fs/cgroup/system.slice/docker-<id>.scope/`, and killing one means writing that scope's `cgroup.kill` file — which the profile grants **no write access** to, so AppArmor denies it. Create/start/exec go through systemd D-Bus and never touch `cgroup.kill`, which is why they work. Confirm you have this exact combination:
+
+```bash
+docker info --format 'Root={{.DockerRootDir}}  Driver={{.CgroupDriver}}  v{{.CgroupVersion}}'
+# Root=/var/snap/docker/...   Driver=systemd   v2      → this is the bug
+```
+
+**Fix**:
+
+- **Quick, reversible (dev boxes)** — unload the daemon's AppArmor profile so it runs unconfined:
+
+  ```bash
+  sudo apparmor_parser -R /var/lib/snapd/apparmor/profiles/snap.docker.dockerd
+  ```
+
+  Stop / recreate works immediately after. Reverse with `sudo apparmor_parser -r <same path>`. **Not persistent** — snapd reloads (re-enforces) the profile on reboot and on the next `docker` snap refresh, so re-run it afterward, or use the permanent fix. (`aa-complain` from `apparmor-utils` does the same non-destructively if that package is installed; base installs only have `apparmor_parser`.)
+
+  > ⚠ **Do NOT `snap restart docker` (or reboot) while the profile is unloaded.** The confined snap launcher requires the profile to be present, so `dockerd` exits immediately (`status=1`, ~88ms) and systemd gives up after a few retries ("start request repeated too quickly") — the daemon won't come back. Recover with: `sudo apparmor_parser -r /var/lib/snapd/apparmor/profiles/snap.docker.dockerd && sudo systemctl reset-failed snap.docker.dockerd.service && sudo snap start docker`. (A clean daemon start also reprograms Docker's iptables `FORWARD` rules — which fixes the separate "same-network containers time out reaching each other" symptom after network churn.)
+
+- **Permanent** — replace the snap with **Docker CE from Docker's apt repo** (docs.docker.com/engine/install/ubuntu). The docker-ce daemon runs **unconfined**, so cgroup v2 + the systemd driver work natively and this whole class of failure is gone. **Back up data volumes first** — removing the `docker` snap deletes everything under `/var/snap/docker/` (images, containers, volumes).
+
+**Related**: after a failed/partial recreate you may then hit a stray `docker-proxy` still holding the published host port (`failed to bind host port …: address already in use`). Don't blind-kill it — confirm its `-container-ip` matches **no** running container (`ps -o args -p <proxy-pid>` → compare against `docker inspect`), then `sudo kill <pid>`. See the "Port Conflicts — Never Blind-Kill `docker-proxy`" ownership check in the umbrella `CLAUDE.md`.
+
 ### `apt install docker-compose-plugin` returns "Unable to locate package"
 
 **Symptom**: `sudo apt install docker-compose-plugin` fails on Ubuntu 24.04 arm64 with "E: Unable to locate package docker-compose-plugin".

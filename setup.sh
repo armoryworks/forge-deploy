@@ -637,6 +637,41 @@ if ! docker info &>/dev/null 2>&1; then
         fi
     fi
 fi
+
+# --- Docker packaging: reject the snap build on cgroup v2 (breaks container teardown) ---
+# The snap-packaged daemon runs under an AppArmor profile that can't write the container's
+# cgroup-v2 `cgroup.kill`, so `docker stop/rm` and `compose up --build` on a running container
+# fail with "could not kill container: permission denied". The project standard is apt Docker.
+if ! $IS_MAC && docker info &>/dev/null 2>&1; then
+    DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"
+    if [[ "$DOCKER_ROOT" == /var/snap/docker/* ]]; then
+        CGROUP_VER="$(docker info --format '{{.CgroupVersion}}' 2>/dev/null)"
+        CGROUP_DRV="$(docker info --format '{{.CgroupDriver}}' 2>/dev/null)"
+        if [[ "$CGROUP_VER" == "2" && "$CGROUP_DRV" == "systemd" ]]; then
+            bail "Docker (snap build on cgroup v2)" \
+                "This host runs the SNAP-packaged Docker ($DOCKER_ROOT) on cgroup v2 + the systemd driver." \
+                "That combination is broken: 'docker stop/rm' and 'compose up --build' on a running" \
+                "container fail with 'could not kill container: permission denied' — container teardown/" \
+                "recreate (the core of the dev + deploy loop) will not work." \
+                "See docs/TROUBLESHOOTING.md > Host setup for the full explanation." \
+                "" \
+                "Fix — use the apt Docker packages (the project standard), not the snap:" \
+                "  # back up any data volumes first — 'snap remove' deletes everything under /var/snap/docker" \
+                "  sudo snap remove docker" \
+                "  sudo apt update && sudo apt install -y docker.io docker-compose-v2" \
+                "  sudo usermod -aG docker \$USER   # then log out and back in" \
+                "" \
+                "(Docker CE from docs.docker.com/engine/install/ubuntu is equally fine — any apt/unconfined" \
+                "daemon works. The only thing to avoid is the snap.)"
+        else
+            warn "Docker is the snap build ($DOCKER_ROOT); the project standard is apt Docker (docker.io / docker-ce)."
+            info "The snap breaks container teardown on cgroup v2 — switch when convenient:"
+            info "  sudo snap remove docker && sudo apt install -y docker.io docker-compose-v2   (back up volumes first)"
+        fi
+    else
+        ok "Docker is an apt/unconfined build ($DOCKER_ROOT)."
+    fi
+fi
 ok "Docker $(docker --version 2>/dev/null)"
 
 # --- Docker Compose ---
