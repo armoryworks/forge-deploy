@@ -80,7 +80,7 @@ readonly REMOTE_API_CONF="${REPO_ROOT}/forge-api-proxy.conf"
 
 # Tag format regexes
 readonly TAG_RE_SHA='^main-[a-f0-9]{7}$'
-readonly TAG_RE_SEMVER='^[0-9]+\.[0-9]+\.[0-9]+$'
+readonly TAG_RE_SEMVER='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
 
 # ─────────────────────────────────────────────────────────────
 # Color output (respects NO_COLOR)
@@ -656,7 +656,7 @@ cmd_list() {
         local matched
         # sort -Vr: version-aware so 0.0.115 ranks above 0.0.9 (plain
         # sort -r would put 0.0.9 first — wrong). grep||true: see above.
-        matched=$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -Vr | head -"$LIST_VERSION_LIMIT" || true)
+        matched=$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' | sort -Vr | head -"$LIST_VERSION_LIMIT" || true)
         [[ -z "$matched" ]] \
           && printf '  %s(no release tags)%s\n' "${C_DIM}" "${C_RESET}" \
           || printf '%s\n' "$matched" | sed 's/^/  /'
@@ -679,7 +679,7 @@ list_combined() {
 
   # grep||true throughout: under `set -e` a no-match grep aborts the run.
   local versions shas
-  versions=$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -Vr | head -"$LIST_VERSION_LIMIT" || true)
+  versions=$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' | sort -Vr | head -"$LIST_VERSION_LIMIT" || true)
   shas=$(printf '%s\n' "$tags" | grep -E '^main-[a-f0-9]+$' || true)
 
   if [[ -z "$versions" ]]; then
@@ -1478,7 +1478,7 @@ cmd_setup() {
 version_sha_rows() {
   local repo="$1" limit="${2:-12}" tags versions shas
   tags=$(ghcr_list_tags "$repo" 2>/dev/null || true)
-  versions=$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -"$limit" || true)
+  versions=$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' | sort -V | tail -"$limit" || true)
   [[ -z "$versions" ]] && return 0
   shas=$(printf '%s\n' "$tags" | grep -E '^main-[a-f0-9]+$' || true)
   ghcr_token "$repo" >/dev/null 2>&1 || true
