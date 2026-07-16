@@ -133,6 +133,29 @@ if $PUBLIC; then
 fi
 
 # ─────────────────────────────────────────────────────────────
+# Deprecation notice for direct invocation
+# ─────────────────────────────────────────────────────────────
+# setup.sh is now the internal bootstrapper behind the forge-deploy CLI,
+# which adds state detection, recovery (--recover), fresh-start, version
+# pinning, and health-gated upgrades on top. The CLI sets
+# FORGE_DEPLOY_CALLER=1 when it invokes us; direct runs get a pointer.
+if [[ -z "${FORGE_DEPLOY_CALLER:-}" ]]; then
+    echo ""
+    echo "NOTE: the supported way to install and manage Forge is the forge-deploy CLI:"
+    echo ""
+    echo "        sudo bash scripts/install-forge-deploy.sh"
+    echo "        forge-deploy"
+    echo ""
+    echo "      It runs this bootstrapper for you and adds recovery, version pinning,"
+    echo "      and health-gated upgrades. Running setup.sh directly still works"
+    echo "      (dev workstations, --source builds) but is no longer the documented path."
+    if [[ -t 0 ]]; then
+        read -rp "      Press Enter to continue anyway (Ctrl-C to abort)... " _ || true
+    fi
+    echo ""
+fi
+
+# ─────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────
 

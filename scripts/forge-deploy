@@ -22,7 +22,7 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-readonly FORGE_DEPLOY_VERSION="0.5.0"
+readonly FORGE_DEPLOY_VERSION="0.6.0"
 readonly REPO_ROOT="${FORGE_DEPLOY_REPO:-/opt/forge-deploy}"
 readonly STATE_DIR="/etc/forge"
 readonly STATE_FILE="${STATE_DIR}/deploy-state.json"
@@ -145,6 +145,11 @@ USAGE:
   forge-deploy --rollback             Re-pin to the previously deployed tag
   forge-deploy --logs                 Tail the deploy history log
   forge-deploy --self-update          git pull forge-deploy + reinstall
+  forge-deploy --recover              Doctor: detect common failure modes / an incomplete
+                                      setup, then fix-and-resume in place (keeps your data)
+  forge-deploy --fresh-start          Wipe EVERYTHING on this box (containers, database,
+                                      files, config) after typed confirmation, then set up
+                                      from scratch
   forge-deploy --help                 This usage
 
 EXAMPLES:
@@ -1388,7 +1393,10 @@ role_valid() { role_scoped_out "$1" >/dev/null 2>&1; }
 role_runs() { ! printf '%s\n' $(role_scoped_out "$1") | grep -qx "$2"; }
 
 cmd_setup() {
-  [[ -f "$ENV_FILE" ]] || die "Env file not found: $ENV_FILE (run setup.sh first)"
+  if [[ ! -f "$ENV_FILE" ]]; then
+    step "No configuration found — running first-time bootstrap"
+    run_bootstrap || die "Bootstrap failed — run 'forge-deploy --recover' to diagnose and resume."
+  fi
   [[ -w "$ENV_FILE" ]] || die "Env file not writable: $ENV_FILE (sudo chown -R \$(id -un):\$(id -gn) $REPO_ROOT)"
 
   local role="$SETUP_ROLE"
@@ -1469,6 +1477,364 @@ cmd_setup() {
   local tmp; tmp=$(mktemp)
   jq --arg r "$role" '.box = {role: $r, configuredAt: (now | todate)}' "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE" || rm -f "$tmp"
   printf '\n%s✓ Setup complete — this box is role "%s".%s\n' "${C_GREEN}${C_BOLD}" "$role" "${C_RESET}"
+}
+
+# ─────────────────────────────────────────────────────────────
+# Bootstrap doctor — detect common failure modes / incomplete
+# setups, then heal-and-resume in place or restart from scratch.
+#
+# Design: state is inferred declaratively from artifacts (what
+# setup.sh/deploys leave behind), never from a checkpoint file,
+# so recovery works no matter HOW the box got into its state.
+# ─────────────────────────────────────────────────────────────
+
+readonly ISSUES_URL="https://github.com/armoryworks/forge-deploy/issues/new"
+readonly CORE_CONTAINERS=(forge forge-storage forge-backup forge-api forge-ui)
+
+# Findings from the last bootstrap_scan:
+#   SCAN_HEAL  — tokens for problems we can fix automatically
+#   SCAN_FATAL — plain-language actions only the user can take
+SCAN_HEAL=()
+SCAN_FATAL=()
+
+scan_heal()  { SCAN_HEAL+=("$1"); warn "$2"; }
+scan_fatal() { SCAN_FATAL+=("$1"); err "$1"; }
+
+# Secret-free diagnostics for a bug report. Never includes .env.
+collect_diagnostics() {
+  {
+    printf '### Environment\n```\n'
+    uname -a 2>/dev/null || true
+    docker --version 2>/dev/null || true
+    docker compose version 2>/dev/null || true
+    docker info --format 'root={{.DockerRootDir}} cgroup={{.CgroupVersion}}/{{.CgroupDriver}}' 2>/dev/null || true
+    printf 'forge-deploy %s\n' "$FORGE_DEPLOY_VERSION"
+    printf '```\n\n### Containers\n```\n'
+    docker ps -a --filter "name=forge" --format 'table {{.Names}}\t{{.Status}}' 2>/dev/null || true
+    printf '```\n\n### forge-api log tail (sanitized)\n```\n'
+    docker logs forge-api --tail 30 2>&1 | sed -E 's/(password|pwd|secret|token|key)=[^;" ]*/\1=***/Ig' || true
+    printf '```\n'
+  } 2>/dev/null
+}
+
+# Dead end we can't fix or identify: explain in plain language, hand the
+# user the issue URL, and offer to auto-file when a gh login is present.
+report_unrecoverable() {
+  local title="$1" summary="$2"
+  printf '\n%sThis needs a human — it could not be fixed automatically.%s\n' "${C_BOLD}${C_RED}" "${C_RESET}"
+  printf '  %s\n\n' "$summary"
+  printf '  Please open an issue (takes a minute, and we watch these):\n'
+  printf '  %s%s?title=%s%s\n\n' "${C_CYAN}" "$ISSUES_URL" "$(printf '%s' "$title" | jq -sRr @uri)" "${C_RESET}"
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 && [[ -t 0 ]]; then
+    local yn
+    read -rp "  You're logged into GitHub — file this issue now with sanitized diagnostics attached? (y/N) " yn
+    if [[ "$yn" =~ ^[Yy]$ ]]; then
+      local body
+      body="$summary
+
+$(collect_diagnostics)
+
+_Filed by the forge-deploy ${FORGE_DEPLOY_VERSION} recovery doctor._"
+      if gh issue create -R "${REGISTRY_OWNER}/forge-deploy" --title "$title" --body "$body"; then
+        ok "Issue filed — thank you."
+      else
+        warn "Auto-filing failed; please use the link above."
+      fi
+    fi
+  fi
+}
+
+# Which of the core containers this box should run (scope-aware).
+expected_containers() {
+  local scoped_out c
+  scoped_out=" $(env_get FORGE_SCOPED_OUT 2>/dev/null) "
+  for c in "${CORE_CONTAINERS[@]}"; do
+    [[ "$scoped_out" == *" $c "* ]] || printf '%s\n' "$c"
+  done
+}
+
+# Scan the box for common failure modes, dependency order. Populates
+# SCAN_HEAL / SCAN_FATAL; prints one line per finding.
+bootstrap_scan() {
+  SCAN_HEAL=(); SCAN_FATAL=()
+  step "Checking this box"
+
+  # 1. Docker installed at all?
+  if ! command -v docker >/dev/null 2>&1; then
+    scan_fatal "Docker is not installed. The README's 'Step 0 — OS prerequisites' has copy-paste install commands for your OS. Install it, then run: forge-deploy --recover"
+    return 0
+  fi
+  ok "docker installed"
+
+  # 2. Daemon running?
+  if ! docker info >/dev/null 2>&1; then
+    if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl >/dev/null 2>&1; then
+      scan_heal daemon "Docker is installed but not running — will start it"
+    else
+      scan_fatal "Docker is installed but not running. Start Docker Desktop, wait for 'Docker Desktop is running', then run: forge-deploy --recover"
+    fi
+    return 0   # everything below needs the daemon
+  fi
+  ok "docker daemon running"
+
+  # 3. snap-packaged Docker on cgroup v2: container teardown is broken.
+  local droot dcg ddrv
+  droot=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
+  dcg=$(docker info --format '{{.CgroupVersion}}' 2>/dev/null || true)
+  ddrv=$(docker info --format '{{.CgroupDriver}}' 2>/dev/null || true)
+  if [[ "$droot" == /var/snap/docker/* && "$dcg" == "2" && "$ddrv" == "systemd" ]]; then
+    scan_fatal "This machine runs the snap-packaged Docker, which cannot stop or update containers on this OS (a known snap bug). Replace it with the standard packages — back up any Docker data first, 'snap remove' deletes it: sudo snap remove docker && sudo apt update && sudo apt install -y docker.io docker-compose-v2 — then run: forge-deploy --recover"
+    return 0
+  fi
+
+  # 4. Compose v2 plugin?
+  if ! docker compose version >/dev/null 2>&1; then
+    scan_fatal "The Docker Compose plugin is missing. Ubuntu: sudo apt install docker-compose-v2 · other systems: see README 'Step 0'. Then run: forge-deploy --recover"
+    return 0
+  fi
+  ok "compose v2 present"
+
+  # 5. Deploy repo intact?
+  if [[ ! -f "$COMPOSE_BASE" || ! -f "$COMPOSE_PROD" || ! -f "${REPO_ROOT}/.env.example" || ! -f "${REPO_ROOT}/setup.sh" ]]; then
+    scan_fatal "The deploy folder at ${REPO_ROOT} is incomplete (missing compose/template files). Re-clone it: git clone https://github.com/armoryworks/forge-deploy.git — then run: forge-deploy --recover"
+    return 0
+  fi
+  ok "deploy repo intact"
+
+  # 6. CLI state installed? (heal: run the installer)
+  if [[ ! -f "$STATE_FILE" || ! -w "$LOG_FILE" ]]; then
+    scan_heal install "forge-deploy isn't fully installed on this box — will run the installer"
+  fi
+
+  # 7. .env — the bootstrap watershed. Absent → first-time setup.
+  if [[ ! -f "$ENV_FILE" ]]; then
+    scan_heal bootstrap "No configuration yet (.env missing) — first-time setup will run"
+    return 0   # everything below reads .env
+  fi
+  ok ".env present"
+  if [[ ! -w "$ENV_FILE" ]]; then
+    scan_heal chown "Config files are owned by another user (usually a stray sudo) — will fix ownership"
+  fi
+
+  # 8. .env missing keys that .env.example has (repo moved on since setup ran).
+  local missing
+  missing=$(awk -F= 'NR==FNR { if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*=/) have[$1]=1; next }
+                     /^[A-Za-z_][A-Za-z0-9_]*=/ && !($1 in have) { print $1 }' \
+                     "$ENV_FILE" "${REPO_ROOT}/.env.example" 2>/dev/null || true)
+  if [[ -n "$missing" ]]; then
+    scan_heal envmerge "Config is missing newer settings ($(printf '%s' "$missing" | tr '\n' ' ' | cut -c1-50)…) — defaults will be added"
+  fi
+
+  # 9. JWT key never generated (login tokens would be forgeable/broken).
+  local jwt
+  jwt=$(env_get JWT_KEY)
+  if [[ -z "$jwt" || "$jwt" == dev-secret-key-* || ${#jwt} -lt 32 ]]; then
+    scan_heal jwt "Login signing key was never generated — will generate one"
+  fi
+
+  # 10. Image tags unset or floating 'latest'.
+  local svc envvar tag
+  for svc in $(box_service_ids); do
+    envvar=$(service_envvar "$svc"); tag=$(env_get "$envvar")
+    if [[ -z "$tag" || "$tag" == "latest" ]]; then
+      scan_heal "pin:$svc" "No pinned version for '$svc' — will pin the newest release"
+    fi
+  done
+
+  # 11. Container states for this box's components.
+  local c state needs_up=false
+  for c in $(expected_containers); do
+    state=$(docker inspect --format '{{.State.Status}}' "$c" 2>/dev/null || echo absent)
+    case "$state" in
+      running) ;;
+      restarting)
+        scan_heal "recreate:$c" "'$c' is stuck in a restart loop — will recreate it" ;;
+      *)
+        needs_up=true ;;
+    esac
+  done
+  if $needs_up; then
+    scan_heal up "Some services are stopped or were never started — will bring them up"
+  elif (( ${#SCAN_HEAL[@]} == 0 )); then
+    ok "all expected services running"
+  fi
+}
+
+# Read the api container's log and translate known failure signatures into
+# plain language. Returns 0 if it identified (and printed) a cause.
+diagnose_api() {
+  local logs
+  logs=$(docker logs forge-api --tail 80 2>&1 || true)
+  if grep -qiE 'password authentication failed' <<<"$logs"; then
+    err "The app can't log in to its database — the database password in ${ENV_FILE} doesn't match the one the database was created with."
+    err "If this install has no data you care about yet, the simplest fix is a clean restart: forge-deploy --fresh-start"
+    return 0
+  fi
+  if grep -qiE 'connection refused|no such host|name or service not known' <<<"$logs"; then
+    err "The app can't reach its database or storage. If they run on another box, check that box is up and reachable (forge-deploy --status there), then re-run: forge-deploy --recover"
+    return 0
+  fi
+  if grep -qiE 'unauthorized|denied.*ghcr|pull access denied' <<<"$logs"; then
+    err "The prebuilt images couldn't be downloaded (registry says 'unauthorized'). Log in first: docker login ghcr.io -u <your-github-username> (use a token with the read:packages scope as the password), then re-run: forge-deploy --recover"
+    return 0
+  fi
+  return 1
+}
+
+run_bootstrap() {
+  local flags=() yn
+  if [[ -t 0 ]]; then
+    read -rp "  Load demo data (sample users/jobs/customers — good for a first look)? (y/N) " yn
+    [[ "$yn" =~ ^[Yy]$ ]] && flags+=(--seeded)
+  fi
+  ( cd "$REPO_ROOT" && FORGE_DEPLOY_CALLER=1 bash ./setup.sh "${flags[@]}" )
+}
+
+pin_newest() {
+  local svc="$1" repo newest
+  repo=$(service_repo "$svc")
+  newest=$(ghcr_list_tags "$repo" 2>/dev/null | grep -E "$TAG_RE_SEMVER" | sort -V | tail -1 || true)
+  if [[ -z "$newest" ]]; then
+    err "Couldn't list released versions for '$svc'. If the registry needs a login: docker login ghcr.io -u <your-github-username> (token with read:packages), then re-run: forge-deploy --recover"
+    return 1
+  fi
+  env_set "$(service_envvar "$svc")" "$newest"
+  ok "$svc pinned to $newest"
+}
+
+# Bring the box up, translating the most common `up` failure (port conflict)
+# into a plain-language action instead of a compose stack trace.
+heal_up() {
+  local out rc=0
+  out=$(cmd_up 2>&1) || rc=$?
+  printf '%s\n' "$out" | tail -3
+  if (( rc != 0 )) && grep -qiE 'port is already allocated|address already in use' <<<"$out"; then
+    local port
+    port=$(grep -oE '[0-9]+' <<<"$(grep -ioE '(0\.0\.0\.0|127\.0\.0\.1|\[::\]):[0-9]+' <<<"$out" | head -1)" | tail -1)
+    scan_fatal "Port ${port:-(unknown)} is already used by another program on this machine. Either stop that program, or change UI_PORT / API_PORT in ${ENV_FILE} and run: forge-deploy --recover. (Don't kill 'docker-proxy' processes blindly — they may belong to another app.)"
+    return 1
+  fi
+  return $rc
+}
+
+apply_heal() {
+  case "$1" in
+    daemon)     sudo systemctl start docker ;;
+    install)    sudo bash "${REPO_ROOT}/scripts/install-forge-deploy.sh" ;;
+    bootstrap)  run_bootstrap ;;
+    chown)      sudo chown -R "$(id -un):$(id -gn)" "$REPO_ROOT" ;;
+    envmerge)
+      local k
+      while IFS= read -r k; do
+        [[ -n "$k" ]] || continue
+        env_set "$k" "$(grep -E "^${k}=" "${REPO_ROOT}/.env.example" | head -1 | cut -d= -f2-)"
+      done < <(awk -F= 'NR==FNR { if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*=/) have[$1]=1; next }
+                        /^[A-Za-z_][A-Za-z0-9_]*=/ && !($1 in have) { print $1 }' \
+                        "$ENV_FILE" "${REPO_ROOT}/.env.example")
+      ok "added missing settings from .env.example defaults"
+      ;;
+    jwt)        env_set JWT_KEY "$(head -c 256 /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48)"; ok "generated login signing key" ;;
+    pin:*)      pin_newest "${1#pin:}" ;;
+    recreate:*) compose up -d --force-recreate "${1#recreate:}" ;;
+    up)         heal_up ;;
+    *)          return 1 ;;
+  esac
+}
+
+# The doctor. Scan → offer resume-vs-fresh → heal → rescan (≤3 passes) →
+# health-gate. Unknown terminal states route to report_unrecoverable.
+cmd_recover() {
+  require_cmd jq; require_cmd curl
+  printf '\n%s== forge-deploy recovery ==%s\n' "${C_BOLD}${C_CYAN}" "${C_RESET}"
+  local pass=1 asked=false
+  while (( pass <= 3 )); do
+    bootstrap_scan
+    if (( ${#SCAN_FATAL[@]} > 0 )); then
+      printf '\n%sFix the item(s) above, then run:%s forge-deploy --recover\n' "${C_BOLD}" "${C_RESET}"
+      return 1
+    fi
+    (( ${#SCAN_HEAL[@]} == 0 )) && break
+    if ! $asked && [[ -t 0 ]]; then
+      asked=true
+      printf '\nFound %d fixable item(s). You can:\n' "${#SCAN_HEAL[@]}"
+      printf '  r) resume — fix in place and keep your data (default)\n'
+      printf '  f) fresh start — wipe EVERYTHING (database, files, config) and set up from scratch\n'
+      printf '  q) quit\n'
+      local c; read -rp 'Choose [r/f/q]: ' c
+      case "$c" in
+        f|F) cmd_fresh_start; return $? ;;
+        q|Q) return 0 ;;
+      esac
+    fi
+    local h healed_all=true
+    for h in "${SCAN_HEAL[@]}"; do
+      apply_heal "$h" || healed_all=false
+    done
+    if ! $healed_all && (( pass == 3 )); then break; fi
+    (( pass++ ))
+  done
+
+  # Post-heal: if this box runs the API, gate on its health before declaring victory.
+  if [[ -f "$ENV_FILE" ]] && expected_containers | grep -qx forge-api; then
+    step "Waiting for the app to come up (first start can take a few minutes)"
+    if wait_healthy api; then
+      local ui_port api_port
+      ui_port=$(env_get UI_PORT); api_port=$(env_get API_PORT)
+      printf '\n%s✓ Forge is up.%s  Web app: http://localhost:%s  ·  API health: http://localhost:%s/api/v1/health\n' \
+        "${C_GREEN}${C_BOLD}" "${C_RESET}" "${ui_port:-4200}" "${api_port:-5000}"
+    else
+      diagnose_api || report_unrecoverable \
+        "recovery: forge-api won't become healthy" \
+        "Setup mostly completed, but the app never reported healthy and the logs don't match a known cause. Your data has not been touched. You can retry with 'forge-deploy --recover', or start over with 'forge-deploy --fresh-start'."
+      return 1
+    fi
+  fi
+
+  # A healthy but never-configured box flows straight into the topology wizard.
+  local role=""
+  [[ -f "$STATE_FILE" ]] && role=$(jq -r '.box.role // ""' "$STATE_FILE" 2>/dev/null || echo "")
+  if [[ -z "$role" && -f "$ENV_FILE" && -t 0 ]]; then
+    SETUP_ROLE=""; cmd_setup
+  fi
+}
+
+# Destructive reset: containers, volumes (database + uploaded files), and
+# generated config — then a from-scratch setup. Typed confirmation required.
+cmd_fresh_start() {
+  [[ -t 0 ]] || die "--fresh-start needs an interactive terminal (it requires typed confirmation)"
+  printf '\n%s== FRESH START — this deletes data ==%s\n' "${C_BOLD}${C_RED}" "${C_RESET}"
+  warn "This permanently removes on THIS box:"
+  warn "  - all Forge containers"
+  warn "  - the database and every uploaded file (volumes: pgdata, miniodata, …)"
+  warn "  - generated config (.env, certs/, compose overrides, box scope)"
+  printf 'Type FRESH to confirm (anything else aborts): '
+  local c; read -r c
+  [[ "$c" == "FRESH" ]] || { warn "Aborted — nothing was changed."; return 1; }
+
+  step "Tearing down"
+  if [[ -f "$ENV_FILE" ]]; then
+    compose down --volumes --remove-orphans 2>/dev/null || true
+  fi
+  # Belt-and-braces for broken/partial states where compose can't resolve.
+  docker rm -f forge forge-storage forge-backup forge-api forge-ui forge-test forge-demo \
+    forge-ai forge-ai-init forge-tts forge-logs forge-signing forge-api-proxy 2>/dev/null || true
+  docker volume ls -q --filter "name=$(basename "$REPO_ROOT")" 2>/dev/null | xargs -r docker volume rm 2>/dev/null || true
+
+  rm -f "$ENV_FILE" "${REPO_ROOT}/docker-compose.override.yml" "$COMPOSE_SCOPE" "$COMPOSE_REMOTE_API" "$REMOTE_API_CONF"
+  rm -rf "${REPO_ROOT}/certs"
+  if [[ -f "$STATE_FILE" && -w "$STATE_FILE" ]]; then
+    local tmp; tmp=$(mktemp)
+    jq 'del(.box)' "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE" || rm -f "$tmp"
+  fi
+  ok "Clean slate"
+
+  step "Running first-time setup"
+  if ! run_bootstrap; then
+    report_unrecoverable "fresh start: setup failed" \
+      "A from-scratch setup still failed on this machine, so the problem is likely environmental (Docker install, network, or registry access) rather than leftover state."
+    return 1
+  fi
+  SETUP_ROLE=""; cmd_setup
 }
 
 # ── Interactive per-component version picker + reset ─────────────────────────
@@ -1965,8 +2331,14 @@ parse_service_arg() {
 
 main() {
   if [[ $# -eq 0 ]]; then
-    # No args: first run (no role yet) -> topology setup wizard.
-    #          configured box        -> per-component version picker.
+    # No args: never-bootstrapped box -> recovery doctor (detects the state,
+    #          runs first-time setup or resumes a broken one);
+    #          first run (no role yet) -> topology setup wizard;
+    #          configured box          -> per-component version picker.
+    if [[ ! -f "$ENV_FILE" || ! -f "$STATE_FILE" ]]; then
+      cmd_recover
+      return
+    fi
     preflight
     local configured_role=""
     [[ -f "$STATE_FILE" ]] && configured_role=$(jq -r '.box.role // ""' "$STATE_FILE" 2>/dev/null || echo "")
@@ -2027,6 +2399,8 @@ main() {
         if [[ $# -ge 2 && "$2" != --* ]]; then remote_api_val="$2"; shift 2; else shift; fi
         ;;
       --self-update)     mode="self-update"; shift ;;
+      --recover|--doctor) mode="recover"; shift ;;
+      --fresh-start)     mode="fresh-start"; shift ;;
       --service)
         [[ $# -ge 2 ]] || die "--service requires a value (api|ui|test|demo|all)"
         service_arg="$2"; shift 2 ;;
@@ -2084,6 +2458,13 @@ main() {
       ;;
     self-update)
       cmd_self_update
+      ;;
+    recover)
+      # Deliberately NO preflight — broken/incomplete states are the point.
+      cmd_recover
+      ;;
+    fresh-start)
+      cmd_fresh_start
       ;;
     "")
       # No mode flag — deploy.

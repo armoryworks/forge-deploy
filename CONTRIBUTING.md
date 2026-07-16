@@ -11,7 +11,7 @@ mind.
 ## What lives here
 
 - `docker-compose*.yml` — one base + variants (cohost, demo, dev, export, prod). The `prod` overlay swaps `build:` for `image:` references to GHCR — applied automatically by `setup.sh` (default) and by `forge-deploy`.
-- `setup.sh` / `setup.ps1` — **first-time bootstrap** (any host, runs once per install). Defaults to GHCR-pull (no source code required); pass `--source` to build from sibling repos.
+- `setup.sh` / `setup.ps1` — **first-time bootstrap** (any host, runs once per install). Defaults to GHCR-pull (no source code required); pass `--source` to build from sibling repos. **End users no longer run this directly** — the `forge-deploy` CLI is the documented entry point and invokes `setup.sh` internally (`FORGE_DEPLOY_CALLER=1`) on a never-bootstrapped box; the CLI also brings `--recover` (heal an incomplete/broken setup in place) and `--fresh-start` (wipe and reinstall). Direct `setup.sh` runs remain supported for the dev loop and `--source` builds (a pointer banner prints first).
 - `refresh.sh` / `refresh.ps1` — **dev-side dev-loop only** (`git pull` + local rebuild). Aborts on Pi-style hosts where `forge-deploy` is installed.
 - `scripts/forge-deploy` — **prod CD CLI** (Pi only). Pulls prebuilt GHCR images, pins them in `.env`, runs `docker compose pull` + `up -d`, gates on healthcheck, rolls back on failure.
 - `scripts/install-forge-deploy.sh` — installs `forge-deploy` and creates `/etc/forge/deploy-state.json` (the sentinel that retires `refresh.*` on that host).
