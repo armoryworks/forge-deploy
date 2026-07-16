@@ -4,6 +4,8 @@ All notable changes to forge-deploy and its packaged images. Format follows [Kee
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-16
+
 ### Fixed
 
 - **SSL install was broken on every fresh box, two ways** (found on a clean Ubuntu 24.04 install, 2026-07-16). (1) *Double-publish of host 443*: setup.sh set `UI_PORT=443` while the generated override also published `443:443`; compose merges port lists, so the container tried to bind host 443 twice and died with "port is already allocated" — with nothing listening, which made it look like phantom daemon state. setup.sh no longer touches `UI_PORT`; the override solely owns 443/80 and the plain-HTTP 4200 mapping is pinned to loopback (`UI_BIND=127.0.0.1`) so TLS can't be bypassed from the network. (2) *`forge-ui/nginx-ssl.conf` was referenced but never shipped*: docker silently auto-created the mount source as an empty root-owned directory, then failed with "not a directory: are you trying to mount a directory onto a file?". The file (canonical source: forge-ui repo) is now tracked in this repo, setup.sh verifies it and removes phantom directories, and the port-80 server exempts the loopback healthcheck from the HTTPS redirect (a blanket 301 made `wget --spider http://127.0.0.1:80/` fail, so the container never went healthy).
