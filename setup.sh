@@ -710,6 +710,16 @@ if ! docker compose version &>/dev/null 2>&1; then
 fi
 ok "$(docker compose version 2>/dev/null)"
 
+# On Ubuntu 24.04 the compose-plugin name is docker-compose-v2, and buildx is
+# a separate package. Missing buildx is non-fatal — compose falls back to the
+# classic builder for the one locally-built sidecar (forge-backup) — but it
+# prints a scary "configured to build using Bake, but buildx isn't installed"
+# warning. Surface the fix once, quietly.
+if ! docker buildx version &>/dev/null 2>&1; then
+    info "docker buildx not installed — builds fall back to the classic builder (fine)."
+    info "To silence compose's Bake warning:  sudo apt install -y docker-buildx"
+fi
+
 # --- Disk space ---
 if $IS_MAC; then
     FREE_GB=$(df -g . 2>/dev/null | tail -1 | awk '{print $4}')
@@ -890,7 +900,14 @@ else
 
         if $ENABLE_SSL; then
             SCHEME="https"
-            sed -i "s|^UI_PORT=4200|UI_PORT=443|" .env
+            # Do NOT touch UI_PORT here. The SSL override publishes 443/80 and
+            # mounts the TLS nginx config; UI_PORT=443 on top of that makes the
+            # base mapping ALSO bind host 443 (compose merges port lists), so
+            # the container fails with "port is already allocated" while
+            # nothing is listening. The plain-HTTP 4200 mapping is bound to
+            # loopback below so TLS can't be bypassed from the network.
+            sed -i "s|^UI_BIND=.*|UI_BIND=127.0.0.1|" .env
+            grep -q "^UI_BIND=" .env || echo "UI_BIND=127.0.0.1" >> .env
         else
             SCHEME="http"
             sed -i "s|^UI_PORT=4200|UI_PORT=80|" .env
@@ -989,7 +1006,13 @@ if $IS_COHOST; then
         fi
     done
 else
-    set_env "UI_BIND" "0.0.0.0"
+    # With SSL, the override publishes 443/80 and TLS must not be bypassable:
+    # keep the plain-HTTP 4200 mapping on loopback. Without SSL, expose it.
+    if $ENABLE_SSL; then
+        set_env "UI_BIND" "127.0.0.1"
+    else
+        set_env "UI_BIND" "0.0.0.0"
+    fi
     set_env "API_BIND" "0.0.0.0"
     set_env "TEST_BIND" "0.0.0.0"
     set_env "POSTGRES_BIND" "0.0.0.0"
@@ -1064,8 +1087,40 @@ if $ENABLE_SSL && ! $IS_COHOST; then
             2>/dev/null
         ok "Generated self-signed SSL certificate (CN=${CERT_CN}, valid 10 years)"
     fi
+
+    # The override bind-mounts ./forge-ui/nginx-ssl.conf over the container's
+    # nginx config. If that FILE is missing, docker silently mkdir-p's the
+    # path as an empty DIRECTORY and the container dies with "not a directory:
+    # are you trying to mount a directory onto a file?". Guard both states.
+    SSL_CONF="./forge-ui/nginx-ssl.conf"
+    if [[ -d "$SSL_CONF" ]]; then
+        # Phantom directory from a previous failed run — remove it (it's
+        # always empty; docker creates nothing inside it).
+        rmdir "$SSL_CONF" 2>/dev/null || sudo rmdir "$SSL_CONF" 2>/dev/null || {
+            fail "$SSL_CONF exists as a directory and couldn't be removed."
+            info "Remove it, then re-run: sudo rm -rf $SSL_CONF"
+            exit 1
+        }
+        ok "Removed phantom directory left by a previous failed run: $SSL_CONF"
+    fi
+    if [[ ! -f "$SSL_CONF" ]]; then
+        fail "$SSL_CONF is missing — your forge-deploy checkout predates the SSL fix."
+        info "Update it:  git -C \"$(pwd)\" pull"
+        exit 1
+    fi
+    ok "TLS nginx config present: $SSL_CONF"
+
     NEEDS_OVERRIDE=true
 fi
+
+# Pre-create host directories that compose bind-mounts. If they don't exist,
+# docker auto-creates them ROOT-owned, which breaks later non-root access
+# (backup pruning, cert rotation, git operations under the repo).
+for host_dir in ./backups ./certs; do
+    if [[ ! -d "$host_dir" ]]; then
+        mkdir -p "$host_dir" 2>/dev/null || true
+    fi
+done
 
 # ── Memory tuning ──
 if $IS_LOW_RAM; then

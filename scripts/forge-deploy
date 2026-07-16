@@ -1614,9 +1614,11 @@ bootstrap_scan() {
   fi
   ok "docker installed"
 
-  # 2. Daemon running?
+  # 2. Daemon running (and reachable by THIS user)?
   if ! docker info >/dev/null 2>&1; then
-    if [[ "$(uname -s)" == "Linux" ]] && command -v systemctl >/dev/null 2>&1; then
+    if docker info 2>&1 | grep -qi "permission denied"; then
+      scan_fatal "Docker is running but your user can't talk to it. Add yourself to the docker group — sudo usermod -aG docker \$USER — then log out and back in (or run 'newgrp docker'), and run: forge-deploy --recover"
+    elif [[ "$(uname -s)" == "Linux" ]] && command -v systemctl >/dev/null 2>&1; then
       scan_heal daemon "Docker is installed but not running — will start it"
     else
       scan_fatal "Docker is installed but not running. Start Docker Desktop, wait for 'Docker Desktop is running', then run: forge-deploy --recover"
@@ -1689,7 +1691,22 @@ bootstrap_scan() {
     fi
   done
 
-  # 11. Container states for this box's components.
+  # 11. SSL override consistency. Two historical setup.sh bugs left installs
+  # in these states; both are fully healable (see CHANGELOG 0.6.x).
+  local override="${REPO_ROOT}/docker-compose.override.yml"
+  if [[ -f "$override" ]] && grep -q '"443:443"' "$override"; then
+    # 11a. Double-publish: base mapping also binding host 443 via UI_PORT.
+    if [[ "$(env_get UI_PORT)" == "443" ]]; then
+      scan_heal sslports "Host port 443 is claimed twice (UI_PORT=443 plus the SSL override) — will move the plain-HTTP mapping back to loopback:4200"
+    fi
+    # 11b. Phantom directory where the TLS nginx config file must be.
+    local sslconf="${REPO_ROOT}/forge-ui/nginx-ssl.conf"
+    if [[ -d "$sslconf" || ! -f "$sslconf" ]]; then
+      scan_heal sslconf "The TLS nginx config is missing or was auto-created as an empty directory by docker — will restore the real file"
+    fi
+  fi
+
+  # 12. Container states for this box's components.
   local c state needs_up=false
   for c in $(expected_containers); do
     state=$(docker inspect --format '{{.State.Status}}' "$c" 2>/dev/null || echo absent)
@@ -1782,6 +1799,28 @@ apply_heal() {
       ok "added missing settings from .env.example defaults"
       ;;
     jwt)        env_set JWT_KEY "$(head -c 256 /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 48)"; ok "generated login signing key" ;;
+    sslports)
+      env_set UI_PORT 4200
+      env_set UI_BIND 127.0.0.1
+      ok "UI_PORT=4200, UI_BIND=127.0.0.1 — the SSL override now solely owns host 443/80"
+      ;;
+    sslconf)
+      local sslconf="${REPO_ROOT}/forge-ui/nginx-ssl.conf"
+      # Phantom empty dir docker auto-created for the bind mount — remove it.
+      if [[ -d "$sslconf" ]]; then
+        rmdir "$sslconf" 2>/dev/null || sudo rmdir "$sslconf" 2>/dev/null || return 1
+      fi
+      # The real file is tracked in this repo; restore it from git if absent.
+      if [[ ! -f "$sslconf" ]]; then
+        git -C "$REPO_ROOT" checkout -- forge-ui/nginx-ssl.conf 2>/dev/null || true
+      fi
+      if [[ -f "$sslconf" ]]; then
+        ok "restored TLS nginx config: forge-ui/nginx-ssl.conf"
+      else
+        err "forge-ui/nginx-ssl.conf is not in this checkout — update it: git -C ${REPO_ROOT} pull — then re-run: forge-deploy --recover"
+        return 1
+      fi
+      ;;
     pin:*)      pin_newest "${1#pin:}" ;;
     recreate:*) compose up -d --force-recreate "${1#recreate:}" ;;
     up)         heal_up ;;

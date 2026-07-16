@@ -4,6 +4,13 @@ All notable changes to forge-deploy and its packaged images. Format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- **SSL install was broken on every fresh box, two ways** (found on a clean Ubuntu 24.04 install, 2026-07-16). (1) *Double-publish of host 443*: setup.sh set `UI_PORT=443` while the generated override also published `443:443`; compose merges port lists, so the container tried to bind host 443 twice and died with "port is already allocated" — with nothing listening, which made it look like phantom daemon state. setup.sh no longer touches `UI_PORT`; the override solely owns 443/80 and the plain-HTTP 4200 mapping is pinned to loopback (`UI_BIND=127.0.0.1`) so TLS can't be bypassed from the network. (2) *`forge-ui/nginx-ssl.conf` was referenced but never shipped*: docker silently auto-created the mount source as an empty root-owned directory, then failed with "not a directory: are you trying to mount a directory onto a file?". The file (canonical source: forge-ui repo) is now tracked in this repo, setup.sh verifies it and removes phantom directories, and the port-80 server exempts the loopback healthcheck from the HTTPS redirect (a blanket 301 made `wget --spider http://127.0.0.1:80/` fail, so the container never went healthy).
+- setup.sh pre-creates `./backups` and `./certs` so docker doesn't auto-create them root-owned.
+- `--recover` detects and heals both SSL failure states (`sslports`, `sslconf` — restores the config from git), and now distinguishes "daemon not running" from "your user can't access the docker socket" (plain-language usermod + re-login guidance).
+- setup.sh notes the missing-buildx Bake warning once (`sudo apt install -y docker-buildx`) instead of letting compose print a scary warning mid-build.
+
 ### Added
 
 - **`forge-deploy` is now the single user-facing entry point** (forge-deploy `0.6.0`). A no-arg run on a never-bootstrapped box routes through the new **recovery doctor**, which runs the first-time bootstrap (delegating to `setup.sh` internally via `FORGE_DEPLOY_CALLER=1`) and then the topology wizard — users never invoke `setup.sh` directly anymore (direct runs print a deprecation pointer and continue).

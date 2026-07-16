@@ -265,6 +265,45 @@ assert_contains "credential-shaped values redacted" "$BODY" "SECRET_SAUCE_PASSWO
 assert_not_contains "no secret leaks into body" "$BODY" "hunter2"
 assert_contains "api log tail included" "$BODY" "MysteryException"
 
+# ── S13: SSL double-publish (UI_PORT=443 + override "443:443") ───────────────
+echo "S13: SSL double-publish of host 443"
+SB=$(new_sandbox s13)
+printf 'JWT_KEY=%s\nSERVER_IMAGE_TAG=1.0.0\nUI_IMAGE_TAG=1.0.0\nUI_PORT=443\nAPI_PORT=5000\nBRAND_NEW_SETTING=x\n' "$(head -c 64 /dev/urandom | tr -dc A-Za-z0-9 | head -c 48)" > "$SB/.env"
+printf 'services:\n  forge-ui:\n    ports:\n      - "443:443"\n      - "80:80"\n' > "$SB/docker-compose.override.yml"
+printf 'server { listen 443 ssl; }\n' > "$SB/nginx-ssl-file.tmp"
+mkdir -p "$SB/forge-ui" && mv "$SB/nginx-ssl-file.tmp" "$SB/forge-ui/nginx-ssl.conf"
+OUT=$(in_sandbox "$SB" ok 'bootstrap_scan; printf "HEALS:%s\n" "${SCAN_HEAL[*]:-}"')
+assert_contains "flags 443 double-publish" "$OUT" "sslports"
+OUT=$(in_sandbox "$SB" ok '
+apply_heal sslports >/dev/null
+[[ $(env_get UI_PORT) == 4200 && $(env_get UI_BIND) == 127.0.0.1 ]] && echo PORTSFIXED
+bootstrap_scan >/dev/null
+for h in "${SCAN_HEAL[@]:-}"; do [[ "$h" == sslports ]] && echo STILLBROKEN; done
+echo DONE')
+assert_contains "heal resets UI_PORT/UI_BIND" "$OUT" "PORTSFIXED"
+assert_not_contains "rescan clean" "$OUT" "STILLBROKEN"
+
+# ── S14: phantom nginx-ssl.conf directory (docker auto-mkdir) ────────────────
+echo "S14: phantom nginx-ssl.conf directory"
+SB=$(new_sandbox s14)
+printf 'JWT_KEY=%s\nSERVER_IMAGE_TAG=1.0.0\nUI_IMAGE_TAG=1.0.0\nUI_PORT=4200\nAPI_PORT=5000\nBRAND_NEW_SETTING=x\n' "$(head -c 64 /dev/urandom | tr -dc A-Za-z0-9 | head -c 48)" > "$SB/.env"
+printf 'services:\n  forge-ui:\n    ports:\n      - "443:443"\n' > "$SB/docker-compose.override.yml"
+mkdir -p "$SB/forge-ui/nginx-ssl.conf"     # the docker-created phantom DIRECTORY
+git -C "$SB" init -q && git -C "$SB" config user.email t@t && git -C "$SB" config user.name t
+( cd "$SB" && rmdir forge-ui/nginx-ssl.conf && printf 'server {}\n' > forge-ui/nginx-ssl.conf \
+  && git add forge-ui/nginx-ssl.conf >/dev/null && git commit -qm seed >/dev/null \
+  && rm forge-ui/nginx-ssl.conf && mkdir forge-ui/nginx-ssl.conf )   # tracked file + phantom dir on top
+OUT=$(in_sandbox "$SB" ok 'bootstrap_scan; printf "HEALS:%s\n" "${SCAN_HEAL[*]:-}"')
+assert_contains "flags phantom conf dir" "$OUT" "sslconf"
+OUT=$(in_sandbox "$SB" ok '
+apply_heal sslconf >/dev/null 2>&1
+[[ -f "$FORGE_DEPLOY_REPO/forge-ui/nginx-ssl.conf" ]] && echo RESTOREDFILE
+bootstrap_scan >/dev/null
+for h in "${SCAN_HEAL[@]:-}"; do [[ "$h" == sslconf ]] && echo STILLBROKEN; done
+echo DONE')
+assert_contains "heal restores the real file from git" "$OUT" "RESTOREDFILE"
+assert_not_contains "rescan clean" "$OUT" "STILLBROKEN"
+
 # ── S11/S12: REAL issue submissions (opt-in) ─────────────────────────────────
 if $FILE_ISSUES; then
   echo "S11/S12: filing two REAL issues (prefix: 'Automated Test Result -- IGNORE/DELETE: ')"
