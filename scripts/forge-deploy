@@ -1500,21 +1500,63 @@ SCAN_FATAL=()
 scan_heal()  { SCAN_HEAL+=("$1"); warn "$2"; }
 scan_fatal() { SCAN_FATAL+=("$1"); err "$1"; }
 
-# Secret-free diagnostics for a bug report. Never includes .env.
+# What this recovery session did, for the issue's repro section. Appended by
+# cmd_recover / cmd_fresh_start as they go: scan findings, heals, outcomes.
+RECOVERY_TRACE=()
+RECOVERY_ENTRY="forge-deploy"
+trace() { RECOVERY_TRACE+=("$1"); }
+
+# Redact credential-shaped values from a log stream.
+sanitize() { sed -E 's/((password|passwd|pwd|secret|token|key|credential)[[:alnum:]_]*[=: ]+)[^;," ]*/\1***/Ig'; }
+
+# Technical diagnostics for a bug report — rich enough to act on from the
+# issue alone, but never secret-bearing: .env values are key-listed with
+# credential-shaped values redacted; log tails pass through sanitize().
 collect_diagnostics() {
   {
-    printf '### Environment\n```\n'
+    printf '### Host\n```\n'
     uname -a 2>/dev/null || true
-    docker --version 2>/dev/null || true
-    docker compose version 2>/dev/null || true
-    docker info --format 'root={{.DockerRootDir}} cgroup={{.CgroupVersion}}/{{.CgroupDriver}}' 2>/dev/null || true
-    printf 'forge-deploy %s\n' "$FORGE_DEPLOY_VERSION"
-    printf '```\n\n### Containers\n```\n'
-    docker ps -a --filter "name=forge" --format 'table {{.Names}}\t{{.Status}}' 2>/dev/null || true
-    printf '```\n\n### forge-api log tail (sanitized)\n```\n'
-    docker logs forge-api --tail 30 2>&1 | sed -E 's/(password|pwd|secret|token|key)=[^;" ]*/\1=***/Ig' || true
+    grep -m1 PRETTY_NAME /etc/os-release 2>/dev/null || true
+    printf 'RAM:  '; free -h 2>/dev/null | awk '/^Mem:/{print $2" total, "$7" available"}' || true
+    printf 'Disk: '; df -h / 2>/dev/null | awk 'NR==2{print $2" total, "$4" free on /"}' || true
+    printf '```\n\n### Docker\n```\n'
+    docker --version 2>/dev/null || echo "docker: not found"
+    docker compose version 2>/dev/null || echo "compose: not found"
+    docker info --format 'root={{.DockerRootDir}}  cgroup={{.CgroupVersion}}/{{.CgroupDriver}}  storage={{.Driver}}  arch={{.Architecture}}' 2>/dev/null || echo "daemon: not reachable"
+    printf 'forge-deploy %s  repo=%s\n' "$FORGE_DEPLOY_VERSION" "$REPO_ROOT"
+    printf '```\n\n### Config (values redacted where credential-shaped)\n```\n'
+    if [[ -f "$ENV_FILE" ]]; then
+      awk -F= '/^[A-Za-z_][A-Za-z0-9_]*=/ {
+        if ($1 ~ /(PASSWORD|PASSWD|PWD|SECRET|KEY|TOKEN|CREDENTIAL)/) print $1"=<redacted>";
+        else { v=$0; sub(/^[^=]*=/,"",v); print $1"="v }
+      }' "$ENV_FILE" 2>/dev/null
+    else
+      echo ".env: absent"
+    fi
+    printf '```\n\n### Deploy state\n```\n'
+    cat "$STATE_FILE" 2>/dev/null || echo "state file absent"
+    printf '\n```\n\n### Containers\n```\n'
+    docker ps -a --filter "name=forge" --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null || true
+    printf '```\n\n### API health probe\n```\n'
+    curl -fsS --max-time 3 "http://127.0.0.1:$(env_get API_PORT 2>/dev/null || echo 5000)/api/v1/health" 2>&1 | head -c 800 || echo "(no response)"
+    printf '\n```\n\n### forge-api log tail (sanitized)\n```\n'
+    docker logs forge-api --tail 60 2>&1 | sanitize || true
+    printf '```\n\n### forge (db) log tail (sanitized)\n```\n'
+    docker logs forge --tail 20 2>&1 | sanitize || true
     printf '```\n'
   } 2>/dev/null
+}
+
+# Frontloaded repro section: how the box got here this session.
+collect_repro() {
+  printf '## Steps to reproduce\n\n'
+  printf '1. Ran `%s` on this box.\n' "$RECOVERY_ENTRY"
+  local i=2 line
+  for line in "${RECOVERY_TRACE[@]}"; do
+    printf '%d. %s\n' "$i" "$line"
+    (( i++ ))
+  done
+  printf '%d. Ended in the unrecoverable state described below.\n' "$i"
 }
 
 # Dead end we can't fix or identify: explain in plain language, hand the
@@ -1530,7 +1572,13 @@ report_unrecoverable() {
     read -rp "  You're logged into GitHub — file this issue now with sanitized diagnostics attached? (y/N) " yn
     if [[ "$yn" =~ ^[Yy]$ ]]; then
       local body
-      body="$summary
+      body="$(collect_repro)
+
+## What failed
+
+$summary
+
+## Diagnostics
 
 $(collect_diagnostics)
 
@@ -1749,6 +1797,7 @@ cmd_recover() {
   local pass=1 asked=false
   while (( pass <= 3 )); do
     bootstrap_scan
+    trace "Doctor scan pass ${pass}: fixable=[${SCAN_HEAL[*]:-none}], needs-user=${#SCAN_FATAL[@]}."
     if (( ${#SCAN_FATAL[@]} > 0 )); then
       printf '\n%sFix the item(s) above, then run:%s forge-deploy --recover\n' "${C_BOLD}" "${C_RESET}"
       return 1
@@ -1768,7 +1817,12 @@ cmd_recover() {
     fi
     local h healed_all=true
     for h in "${SCAN_HEAL[@]}"; do
-      apply_heal "$h" || healed_all=false
+      if apply_heal "$h"; then
+        trace "Auto-fix '$h': succeeded."
+      else
+        trace "Auto-fix '$h': FAILED."
+        healed_all=false
+      fi
     done
     if ! $healed_all && (( pass == 3 )); then break; fi
     (( pass++ ))
@@ -1777,12 +1831,14 @@ cmd_recover() {
   # Post-heal: if this box runs the API, gate on its health before declaring victory.
   if [[ -f "$ENV_FILE" ]] && expected_containers | grep -qx forge-api; then
     step "Waiting for the app to come up (first start can take a few minutes)"
+    trace "Waited for forge-api health (timeout $(health_timeout)s)."
     if wait_healthy api; then
       local ui_port api_port
       ui_port=$(env_get UI_PORT); api_port=$(env_get API_PORT)
       printf '\n%s✓ Forge is up.%s  Web app: http://localhost:%s  ·  API health: http://localhost:%s/api/v1/health\n' \
         "${C_GREEN}${C_BOLD}" "${C_RESET}" "${ui_port:-4200}" "${api_port:-5000}"
     else
+      trace "forge-api never reported healthy; log signatures matched no known cause."
       diagnose_api || report_unrecoverable \
         "recovery: forge-api won't become healthy" \
         "Setup mostly completed, but the app never reported healthy and the logs don't match a known cause. Your data has not been touched. You can retry with 'forge-deploy --recover', or start over with 'forge-deploy --fresh-start'."
@@ -1827,9 +1883,11 @@ cmd_fresh_start() {
     jq 'del(.box)' "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE" || rm -f "$tmp"
   fi
   ok "Clean slate"
+  trace "Fresh start: tore down containers/volumes and removed generated config."
 
   step "Running first-time setup"
   if ! run_bootstrap; then
+    trace "From-scratch bootstrap (setup.sh) exited non-zero on a clean slate."
     report_unrecoverable "fresh start: setup failed" \
       "A from-scratch setup still failed on this machine, so the problem is likely environmental (Docker install, network, or registry access) rather than leftover state."
     return 1
@@ -2461,9 +2519,11 @@ main() {
       ;;
     recover)
       # Deliberately NO preflight — broken/incomplete states are the point.
+      RECOVERY_ENTRY="forge-deploy --recover"
       cmd_recover
       ;;
     fresh-start)
+      RECOVERY_ENTRY="forge-deploy --fresh-start"
       cmd_fresh_start
       ;;
     "")
