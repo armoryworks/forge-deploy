@@ -51,6 +51,16 @@
 #   --no-public-preflight  Skip the system-side preflight (assume user has
 #                        nginx/ufw/etc handled). --public still implies
 #                        --standalone --ssl.
+#   --local              This machine only: localhost URLs, no network
+#                        exposure changes (the classic dev-workstation
+#                        default). Skips the deployment-target prompt.
+#   --lan                LAN turnkey: other PCs on the local network reach
+#                        the UI over plain HTTP at this host's LAN IP. Binds
+#                        the UI to 0.0.0.0 and points FRONTEND_BASE_URL /
+#                        CORS_ORIGINS / MINIO_PUBLIC_ENDPOINT at the LAN IP.
+#                        No domain, DNS, or certificate needed.
+#                        (With neither flag, interactive runs are prompted
+#                        local / LAN / public; the answer is saved to .env.)
 #   --hostname <fqdn>    Explicit hostname for the self-signed cert CN/SAN.
 #                        Otherwise auto-detected via `hostname -f` (with a
 #                        prompt to confirm).
@@ -75,6 +85,7 @@ MODE_FLAG=""  # "" = auto/use .env, "cohost" or "standalone" force
 PUBLIC=false
 PUBLIC_PREFLIGHT=true
 PUBLIC_HOSTNAME=""
+DEPLOY_TARGET=""  # "" = prompt/saved, "local", "lan", "public"
 # Host network watchdog (Linux/systemd only — silently no-op on macOS).
 # Env override: SKIP_HOST_WATCHDOG=1 ./setup.sh
 SKIP_HOST_WATCHDOG=${SKIP_HOST_WATCHDOG:-false}
@@ -98,6 +109,8 @@ while (( $# > 0 )); do
         --standalone)           MODE_FLAG="standalone" ;;
         --public)               PUBLIC=true ;;
         --no-public-preflight)  PUBLIC_PREFLIGHT=false ;;
+        --local)                DEPLOY_TARGET="local" ;;
+        --lan)                  DEPLOY_TARGET="lan" ;;
         --hostname)
             shift
             if [[ $# -eq 0 || -z "${1:-}" ]]; then
@@ -131,6 +144,65 @@ if $PUBLIC; then
     MODE_FLAG="standalone"
     SSL_FLAG="force"
 fi
+
+# ─────────────────────────────────────────────────────────────
+# Deployment target (local / lan / public)
+# ─────────────────────────────────────────────────────────────
+# One question that makes localhost vs LAN vs public turnkey:
+#   local  — this machine only, localhost URLs (classic dev default)
+#   lan    — other PCs on the local network, plain HTTP on this host's
+#            LAN IP; no domain/DNS/cert
+#   public — internet-facing HTTPS (same as the --public macro)
+# Explicit flags win; otherwise reuse the answer saved in .env from a
+# previous run; otherwise prompt on interactive terminals. Non-interactive
+# runs default to "local" (the pre-existing behavior).
+if $PUBLIC; then
+    DEPLOY_TARGET="public"
+fi
+
+if [[ -z "$DEPLOY_TARGET" && -z "$MODE_FLAG" ]]; then
+    SAVED_TARGET=$(grep '^QBE_DEPLOY_TARGET=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | xargs || true)
+    case "${SAVED_TARGET:-}" in
+        local|lan|public) DEPLOY_TARGET="$SAVED_TARGET" ;;
+    esac
+fi
+
+if [[ -z "$DEPLOY_TARGET" && -z "$MODE_FLAG" && -t 0 ]]; then
+    echo ""
+    echo "How will people reach this Forge install?"
+    echo ""
+    echo "  1) Just this machine      — localhost only (dev workstation)"
+    echo "  2) Other PCs on this LAN  — plain HTTP at this machine's network"
+    echo "                              address; no domain or certificate"
+    echo "  3) The public internet    — HTTPS on ports 80/443, with system"
+    echo "                              preflight (same as --public)"
+    echo ""
+    read -rp "Select [1/2/3] (default 1): " target_choice
+    case "${target_choice:-1}" in
+        2) DEPLOY_TARGET="lan" ;;
+        3) DEPLOY_TARGET="public" ;;
+        *) DEPLOY_TARGET="local" ;;
+    esac
+fi
+[[ -z "$DEPLOY_TARGET" ]] && DEPLOY_TARGET="local"
+
+case "$DEPLOY_TARGET" in
+    lan)
+        # LAN turnkey: standalone stack, no TLS. Forces standalone so a
+        # stale cohost answer in .env can't keep the UI on loopback.
+        # Explicit --cohost / --ssl still win.
+        [[ -z "$MODE_FLAG" ]] && MODE_FLAG="standalone"
+        [[ -z "$SSL_FLAG"  ]] && SSL_FLAG="skip"
+        ;;
+    public)
+        if ! $PUBLIC; then
+            # Chosen via the prompt: apply the same implications as --public.
+            PUBLIC=true
+            MODE_FLAG="standalone"
+            SSL_FLAG="force"
+        fi
+        ;;
+esac
 
 # ─────────────────────────────────────────────────────────────
 # Deprecation notice for direct invocation
@@ -1023,6 +1095,35 @@ else
     set_env "DEMO_BIND" "0.0.0.0"
 fi
 
+# Persist the deployment target so re-runs (and refresh.sh) skip the prompt.
+set_env "QBE_DEPLOY_TARGET" "$DEPLOY_TARGET"
+
+# ── LAN turnkey networking ──
+# Point the frontend URL, CORS, and MinIO public endpoint at this host's LAN
+# IP so browsers on OTHER machines work out of the box (the page loads either
+# way, but API calls and file links break if these stay on localhost).
+# Runs on every setup (not just fresh .env) so converting an existing
+# localhost install to LAN is a single re-run with --lan.
+if [[ "$DEPLOY_TARGET" == "lan" ]] && ! $IS_COHOST && ! $ENABLE_SSL; then
+    step "Configuring LAN access"
+    HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+    if [[ -n "${HOST_IP:-}" ]]; then
+        UI_PORT_CUR=$(grep '^UI_PORT=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | xargs)
+        UI_PORT_CUR=${UI_PORT_CUR:-4200}
+        PORT_SUFFIX=":${UI_PORT_CUR}"
+        [[ "$UI_PORT_CUR" == "80" ]] && PORT_SUFFIX=""
+        set_env "FRONTEND_BASE_URL" "http://${HOST_IP}${PORT_SUFFIX}"
+        set_env "CORS_ORIGINS" "http://${HOST_IP}${PORT_SUFFIX},http://localhost${PORT_SUFFIX}"
+        set_env "MINIO_PUBLIC_ENDPOINT" "${HOST_IP}:9000"
+        set_env "MOCK_INTEGRATIONS" "false"
+        ok "LAN clients will use: http://${HOST_IP}${PORT_SUFFIX}"
+        info "Note: if this machine's LAN IP changes (DHCP), re-run setup.sh --lan."
+        info "A DHCP reservation for ${HOST_IP} on the router avoids that."
+    else
+        warn "Could not detect a LAN IP — edit FRONTEND_BASE_URL / CORS_ORIGINS in .env manually."
+    fi
+fi
+
 # ─────────────────────────────────────────────────────────────
 # 5. Write version.json
 # ─────────────────────────────────────────────────────────────
@@ -1387,7 +1488,11 @@ elif $ENABLE_SSL; then
     UI_URL="${SCHEME}://localhost"
 else
     SCHEME="http"
-    UI_URL="http://localhost:4200"
+    UI_PORT_FINAL=$(grep '^UI_PORT=' .env 2>/dev/null | head -1 | cut -d= -f2- | xargs)
+    UI_PORT_FINAL=${UI_PORT_FINAL:-4200}
+    UI_PORT_SUFFIX=":${UI_PORT_FINAL}"
+    [[ "$UI_PORT_FINAL" == "80" ]] && UI_PORT_SUFFIX=""
+    UI_URL="http://localhost${UI_PORT_SUFFIX}"
 fi
 
 echo ""
@@ -1404,7 +1509,11 @@ echo "  Open in your browser:"
 echo ""
 echo "    $UI_URL"
 if [[ -n "${HOST_IP:-}" ]]; then
-echo "    ${SCHEME}://${HOST_IP}  (network access)"
+if [[ "$SCHEME" == "http" ]]; then
+echo "    http://${HOST_IP}${UI_PORT_SUFFIX:-}  (from other PCs on this network)"
+else
+echo "    ${SCHEME}://${HOST_IP}  (from other PCs on this network)"
+fi
 fi
 if $ENABLE_SSL; then
 echo ""
