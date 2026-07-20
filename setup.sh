@@ -323,8 +323,8 @@ port_listener() {
             local line pid name
             line=$(ss -tlnpH "sport = :${port}" 2>/dev/null | head -1)
             if [[ -n "$line" ]]; then
-                pid=$(echo "$line" | grep -oP 'pid=\K[0-9]+' | head -1)
-                name=$(echo "$line" | grep -oP '"\K[^"]+' | head -1)
+                pid=$(echo "$line" | grep -oP 'pid=\K[0-9]+' | head -1 || true)
+                name=$(echo "$line" | grep -oP '"\K[^"]+' | head -1 || true)
                 if [[ -n "$pid" && -n "$name" ]]; then
                     echo "$pid $name"
                 fi
@@ -826,7 +826,11 @@ for PORT in $CHECK_PORTS; do
         fi
     else
         if ss -tlnp 2>/dev/null | grep -q ":${PORT} " 2>/dev/null; then
-            HOLDER=$(ss -tlnpH "sport = :${PORT}" 2>/dev/null | grep -oP '"\K[^"]+' | head -1)
+            # Non-root users can't read other users' process names from ss —
+            # the grep then matches nothing, and without the || true its
+            # pipefail status would silently kill the whole script (set -e).
+            HOLDER=$(ss -tlnpH "sport = :${PORT}" 2>/dev/null | grep -oP '"\K[^"]+' | head -1 || true)
+            [[ -z "$HOLDER" ]] && HOLDER="unidentified"
         fi
     fi
     if [[ -n "$HOLDER" ]]; then
@@ -834,6 +838,13 @@ for PORT in $CHECK_PORTS; do
         # previous run of this stack — non-fatal.
         if [[ "$HOLDER" == "docker-proxy" ]]; then
             ok "Port $PORT: held by docker-proxy (likely a previous forge run)"
+        elif [[ "$HOLDER" == "unidentified" ]]; then
+            # Almost always the previous forge run's root-owned docker-proxy,
+            # invisible to a non-root ss. Warn but don't block — if it's a
+            # genuine foreign process, compose up fails with a clear
+            # "port is already allocated" and --recover names the culprit.
+            warn "Port $PORT: in use, but this user can't identify the process (needs sudo)."
+            warn "If it's the previous Forge run, compose will rebind it; continuing."
         else
             CONFLICTS="$CONFLICTS $PORT(${HOLDER})"
         fi
@@ -1108,7 +1119,7 @@ if [[ "$DEPLOY_TARGET" == "lan" ]] && ! $IS_COHOST && ! $ENABLE_SSL; then
     step "Configuring LAN access"
     HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
     if [[ -n "${HOST_IP:-}" ]]; then
-        UI_PORT_CUR=$(grep '^UI_PORT=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | xargs)
+        UI_PORT_CUR=$(grep '^UI_PORT=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | xargs || true)
         UI_PORT_CUR=${UI_PORT_CUR:-4200}
         PORT_SUFFIX=":${UI_PORT_CUR}"
         [[ "$UI_PORT_CUR" == "80" ]] && PORT_SUFFIX=""
@@ -1488,7 +1499,7 @@ elif $ENABLE_SSL; then
     UI_URL="${SCHEME}://localhost"
 else
     SCHEME="http"
-    UI_PORT_FINAL=$(grep '^UI_PORT=' .env 2>/dev/null | head -1 | cut -d= -f2- | xargs)
+    UI_PORT_FINAL=$(grep '^UI_PORT=' .env 2>/dev/null | head -1 | cut -d= -f2- | xargs || true)
     UI_PORT_FINAL=${UI_PORT_FINAL:-4200}
     UI_PORT_SUFFIX=":${UI_PORT_FINAL}"
     [[ "$UI_PORT_FINAL" == "80" ]] && UI_PORT_SUFFIX=""
