@@ -4,6 +4,10 @@ All notable changes to forge-deploy and its packaged images. Format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **Deployment targets in setup.sh: local / LAN / public** (`dbcf025`). Interactive first-time runs with no mode flags are asked "How will people reach this Forge install?"; the answer persists in `.env` (`QBE_DEPLOY_TARGET`) so re-runs never re-ask. New flags: `--lan` (turnkey LAN install — standalone, no TLS, UI bound `0.0.0.0`, `FRONTEND_BASE_URL` / `CORS_ORIGINS` / `MINIO_PUBLIC_ENDPOINT` pointed at the host's LAN IP) and `--local` (explicit localhost-only). `--lan` also converts an existing install in place, which fixes the field-reported failure where the headless auto-SSL default pinned `4200` to loopback and LAN clients got *connection refused*. Final banner now prints the port-correct URL other PCs should use. Documented in `docs/DEPLOY.md` §6 and `docs/TROUBLESHOOTING.md` › Network access (LAN).
+
 ## [0.6.1] - 2026-07-16
 
 ### Fixed

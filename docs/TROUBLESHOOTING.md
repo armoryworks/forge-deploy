@@ -379,6 +379,34 @@ The startup line should now read `Clock: SystemClock` with no mention of `(devel
 
 ---
 
+## Network access (LAN)
+
+### Other PCs on the LAN get "connection refused" (setup completed fine)
+
+**Symptom**: Setup completes and the UI works in a browser on the server itself, but every other machine on the same network gets *connection refused* on `http://<server-ip>:4200`.
+
+**Cause**: The install didn't run with a LAN deployment target. Two common ways to land here:
+
+1. **Headless auto-SSL default** — on a box with no display server, older setups (and current ones answered "local") auto-enable self-signed SSL, which deliberately pins the plain-HTTP `4200` port to `127.0.0.1` and serves on `443`/`80` instead. LAN clients hitting `:4200` are actively refused. (The UI may in fact be reachable at `https://<server-ip>` with a cert warning.)
+2. **Loopback binds** — a stale cohost answer in `.env` (`QBE_HOSTING_MODE=cohost`) keeps every service on `127.0.0.1`.
+
+**Fix**: Re-run setup with the LAN target — it converts the install in place (rebinds the UI to `0.0.0.0`, removes the SSL override from `COMPOSE_FILE`, rewrites `FRONTEND_BASE_URL` / `CORS_ORIGINS` / `MINIO_PUBLIC_ENDPOINT` to the LAN IP):
+
+```bash
+git pull
+./setup.sh --lan
+```
+
+The final banner prints the exact URL LAN clients should use (`http://<lan-ip>:4200`).
+
+If LAN clients still can't connect afterwards, verify from a Windows client:
+
+```powershell
+Test-NetConnection <server-ip> -Port 4200
+```
+
+`TcpTestSucceeded : False` with the server listening on `0.0.0.0:4200` (`ss -tlnp | grep 4200`) means the network is blocking client-to-client traffic — typically router/AP "client isolation" or a guest VLAN. That's a router setting, not a server one. Also note the `.env` URLs embed the server's IP: on DHCP, an IP change breaks LAN access until `./setup.sh --lan` is re-run — prefer a DHCP reservation on the router.
+
 ## Tunnel / Cloudflare
 
 ### Public URL returns `502 Bad Gateway`

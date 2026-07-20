@@ -139,6 +139,18 @@ You do **not** need to clone the application source repos (`forge-api`, `forge-u
 
 ### Flag selection
 
+First decide the deployment target — how people will reach the install:
+
+| Target | Flag | What it does |
+|---|---|---|
+| This machine only | `--local` | Localhost URLs, classic dev-workstation default. |
+| Other PCs on the customer's LAN | `--lan` | Plain HTTP at the host's LAN IP, no domain/DNS/cert. Binds the UI to `0.0.0.0` and points `FRONTEND_BASE_URL` / `CORS_ORIGINS` / `MINIO_PUBLIC_ENDPOINT` at the LAN IP so browsers on other machines work out of the box. |
+| Public internet | `--public` | Standalone HTTPS on 80/443 with self-signed cert and system preflight. |
+
+With no flag, interactive runs are prompted (local / LAN / public) and the answer is saved to `.env` as `QBE_DEPLOY_TARGET`, so re-runs and `refresh.sh` never re-ask. Non-interactive runs default to local.
+
+`--lan` is also the fix for an already-installed box that got the headless auto-SSL default (symptom: LAN clients get *connection refused* on `:4200` because it's pinned to loopback). Re-running `./setup.sh --lan` converts the install in place: drops the SSL override, rebinds the UI, and rewrites the URLs to `http://<lan-ip>:4200`. Note the URLs embed the host's IP — if the box is on DHCP, get the customer to add a DHCP reservation on their router, or re-run `--lan` after an IP change.
+
 For a typical customer POC/UAT deploy fronted by Cloudflare Tunnel:
 
 ```bash
@@ -160,6 +172,7 @@ Flags **not** to set unless you have a specific reason:
 
 Setup will prompt interactively for:
 
+- **Deployment target** (only if no target flag was passed and none is saved in `.env`) — "How will people reach this Forge install?" local / LAN / public, as described under Flag selection above.
 - **Customer slug** — answer with the value you pinned in step 1.
 - **Seed admin password** — choose a strong one and save it. This is the only way to log in initially.
 - Possibly **admin email** and **hostname**. Use real values.
