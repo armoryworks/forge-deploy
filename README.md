@@ -39,6 +39,33 @@ npx @armoryworks/forge-deploy --public
 npx @armoryworks/forge-deploy /opt/forge --lan
 ```
 
+## npx or npm install?
+
+Either works — they're two verbs of the same tool, and both end up
+running the same `forge-deploy` command:
+
+```bash
+# One-shot (recommended): downloads to a temp cache, runs once,
+# leaves nothing installed. Always executes the latest published version.
+npx @armoryworks/forge-deploy --lan
+
+# Persistent install: keeps the CLI on your PATH as `forge-deploy`.
+npm install -g @armoryworks/forge-deploy
+forge-deploy --lan
+```
+
+The difference is what's left behind. `npx` disposes of the package after
+it runs, so every invocation is current. `npm install -g` keeps a copy
+that stays at whatever version you installed until you `npm update -g` —
+fine if you prefer a permanent `forge-deploy` command, just remember the
+copy can go stale. Since this package is a thin bootstrapper (the deploy
+tree itself is always fetched fresh from GitHub either way), a stale
+global install usually still works — you'd only miss changes to the
+installer itself.
+
+We document the `npx` form because run-once installers are its canonical
+use, but there is no functional difference in what gets deployed.
+
 ## Requirements
 
 - **Docker** with the compose plugin (`docker compose`)

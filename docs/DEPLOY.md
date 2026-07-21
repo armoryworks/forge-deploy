@@ -117,9 +117,30 @@ You should see `Login Succeeded`. The credential is written to `~/.docker/config
 
 ---
 
-## 5. Clone forge-deploy
+## 5. Get the deploy tree (npx, npm, or git clone)
 
-The deploy scripts and compose configuration live in `forge-deploy`, not the application repo. Clone to a stable path under `/opt`:
+The deploy scripts and compose configuration live in `forge-deploy`, not the application repo. Three equivalent ways to get it onto the host — all end at the same tree with the same `setup.sh`:
+
+**Option A — npx (one-shot, no Node knowledge needed beyond having Node 18+):**
+
+```bash
+sudo mkdir -p /opt/forge-deploy && sudo chown $USER:$USER /opt/forge-deploy
+npx @armoryworks/forge-deploy /opt/forge-deploy --fetch-only
+cd /opt/forge-deploy
+```
+
+The installer downloads the current `main` tree from GitHub. Drop `--fetch-only` to have it run `setup.sh` immediately after fetching (setup flags pass straight through, e.g. `npx @armoryworks/forge-deploy /opt/forge-deploy --public`). `npx` keeps nothing installed and always runs the latest published installer.
+
+**Option B — npm global install (persistent `forge-deploy` command):**
+
+```bash
+npm install -g @armoryworks/forge-deploy
+forge-deploy /opt/forge-deploy --fetch-only
+```
+
+Same behavior; the CLI stays on the PATH. It pins the *installer* at the installed version until you `npm update -g` — but since the deploy tree is always fetched fresh from GitHub, a stale installer only matters if the bootstrapper itself changed.
+
+**Option C — git clone (no Node required; what the installer does under the hood):**
 
 ```bash
 sudo mkdir -p /opt/forge-deploy
@@ -128,6 +149,8 @@ git clone https://github.com/armoryworks/forge-deploy.git /opt/forge-deploy
 cd /opt/forge-deploy
 chmod +x setup.sh
 ```
+
+A git clone additionally gives you `git pull` for updates and local history — preferable for operator-managed installs you'll revisit. The npx/npm path re-fetches over the same directory to update (it preserves `.env`, overrides, and volumes).
 
 You do **not** need to clone the application source repos (`forge-api`, `forge-ui`, `forge-test`) for a production deploy. Those are only needed if you intend to build images from source with `./setup.sh --source` (developer mode).
 
