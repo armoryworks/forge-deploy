@@ -70,6 +70,12 @@
 #                        the box if the network stays dead — recovers a
 #                        wedged Pi NIC without a physical button press.
 #                        Installed by default on Linux; no-op on macOS.
+#   --doctor             Run the network-exposure diagnostic (doctor.sh)
+#                        instead of setup: stack health, local TLS, host
+#                        firewall, public IP, NAT-hairpin detection, and an
+#                        outside-in reachability probe, ending in plain-
+#                        language next actions (e.g. the literal router
+#                        port-forward rules). Zero-interaction, re-runnable.
 #   -h / --help          Show this help.
 
 set -euo pipefail
@@ -121,6 +127,7 @@ while (( $# > 0 )); do
             ;;
         --hostname=*)           PUBLIC_HOSTNAME="${1#--hostname=}" ;;
         --skip-host-watchdog)   SKIP_HOST_WATCHDOG=true ;;
+        --doctor)               exec bash "$(dirname "$0")/doctor.sh" ;;
         -h|--help)              show_help; exit 0 ;;
         *) echo "Unknown option: $1"; echo "Run './setup.sh --help' for usage."; exit 1 ;;
     esac

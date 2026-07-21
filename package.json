@@ -1,6 +1,6 @@
 {
   "name": "@armoryworks/forge-deploy",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Installer for the Forge shop management system. Fetches the deploy tree from GitHub and runs setup.",
   "keywords": [
     "forge",

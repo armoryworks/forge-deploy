@@ -93,10 +93,25 @@ script. The most useful flags:
 | `--include-signing` | Also start the DocuSeal e-signature service |
 | `--include-all` | All optional services |
 | `--source` | Developer mode — build images locally from sibling source repos |
+| `--doctor` | Diagnose instead of install: checks the stack, TLS, firewall, public IP, and probes reachability from the internet, then prints the exact next actions (including router port-forward rules) |
 | `--fetch-only` | (installer flag) Download the deploy tree but don't run setup |
 
 The full list is documented at the top of
 [`setup.sh`](https://github.com/armoryworks/forge-deploy/blob/main/setup.sh).
+
+## Something not working?
+
+One command triages the whole install — stack health, HTTPS, firewall,
+public IP, router/NAT problems, and whether the internet can actually
+reach you — and ends with plain-language instructions for whatever it
+finds:
+
+```bash
+npx @armoryworks/forge-deploy --doctor
+```
+
+It changes nothing, asks nothing, and is safe to re-run until every
+check reads `[OK]`.
 
 ## Updating
 
