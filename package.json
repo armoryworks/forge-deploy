@@ -1,0 +1,27 @@
+{
+  "name": "@armoryworks/forge-deploy",
+  "version": "0.1.0",
+  "description": "Installer for the Forge shop management system. Fetches the deploy tree from GitHub and runs setup.",
+  "keywords": [
+    "forge",
+    "erp",
+    "manufacturing",
+    "shop-management",
+    "installer"
+  ],
+  "homepage": "https://github.com/armoryworks/forge-deploy#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/armoryworks/forge-deploy.git"
+  },
+  "license": "Apache-2.0",
+  "bin": {
+    "forge-deploy": "bin/forge-deploy.mjs"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
