@@ -116,6 +116,47 @@ else
     info "forwarding cannot work — ask your ISP for a routable IP."
 fi
 
+# ── 4b. Double-NAT detection ───────────────────────────────────────────────
+# If the first TWO route hops are both private/CGNAT addresses, this box sits
+# behind two NAT layers (typically an ISP modem-router with the user's own
+# router behind it). A port forward on the inner router alone can never work.
+is_private_ip() {
+    [[ "$1" =~ ^10\. ]] || [[ "$1" =~ ^192\.168\. ]] || \
+    [[ "$1" =~ ^172\.(1[6-9]|2[0-9]|3[01])\. ]] || \
+    [[ "$1" =~ ^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\. ]]
+}
+
+TRACE_CMD=""
+command -v tracepath &>/dev/null && TRACE_CMD="tracepath -n -m 3"
+command -v traceroute &>/dev/null && TRACE_CMD="traceroute -n -m 3 -q 1 -w 2"
+if [[ -n "$TRACE_CMD" && -n "$PUBLIC_IP" ]]; then
+    step "Checking for double NAT (two router layers)"
+    hops=$(timeout 15 $TRACE_CMD 1.1.1.1 2>/dev/null \
+        | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | grep -v '^1\.1\.1\.1$' \
+        | awk '!seen[$0]++' | head -2)
+    hop1=$(sed -n 1p <<<"$hops"); hop2=$(sed -n 2p <<<"$hops")
+    if [[ -n "$hop1" && -n "$hop2" ]] && is_private_ip "$hop1" && is_private_ip "$hop2"; then
+        warn "DOUBLE NAT detected: two routers between this box and the internet"
+        info "(hop 1: ${hop1}, hop 2: ${hop2} — both private). A port forward on"
+        info "your own router alone cannot work; the outer box drops traffic first."
+        info "Fix ONE of these, best first:"
+        info "  a. Put the ISP modem/router in 'bridge mode' (its settings, or ask"
+        info "     the ISP) so only your own router does NAT — then the normal"
+        info "     forwarding rules below are all you need."
+        info "  b. Forward on BOTH layers: on the OUTER (ISP) box, forward 80+443"
+        info "     to your router's WAN address (shown on your router's status"
+        info "     page); on YOUR router, forward 80+443 to ${LAN_IP:-this machine}."
+        info "  c. On the OUTER box, set your router's WAN address as the 'DMZ"
+        info "     host' (forwards everything — coarser, but simple), then add"
+        info "     the normal rules on your router."
+        action "Resolve the double NAT (bridge mode on the ISP box, or forward on both layers) — details above"
+    elif [[ -n "$hop1" ]] && is_private_ip "$hop1"; then
+        ok "Single NAT layer — one router between this box and the internet."
+    else
+        ok "No NAT detected — this box appears to have a direct public address."
+    fi
+fi
+
 # ── 5. Hairpin check (why testing your own public IP from inside lies) ─────
 if $STACK_UP && $HAS_443 && [[ -n "$PUBLIC_IP" ]]; then
     step "Checking what answers your public IP from INSIDE this network"
@@ -136,9 +177,10 @@ if $STACK_UP && $HAS_443 && [[ -n "$PUBLIC_IP" ]]; then
 fi
 
 # ── 6. Outside-in reachability (the test that actually counts) ─────────────
-if $STACK_UP && $HAS_443 && [[ -n "$PUBLIC_IP" ]]; then
-    step "Probing ${PUBLIC_IP}:443 from the internet (via check-host.net)"
+# probe_outside sets $probe_result to open|closed|unknown.
+probe_outside() {
     probe_result="unknown"
+    local req req_id res
     req=$($CURL -H 'Accept: application/json' \
         "https://check-host.net/check-tcp?host=${PUBLIC_IP}:443&max_nodes=3" || true)
     req_id=$(sed -n 's/.*"request_id" *: *"\([^"]*\)".*/\1/p' <<<"$req")
@@ -151,6 +193,30 @@ if $STACK_UP && $HAS_443 && [[ -n "$PUBLIC_IP" ]]; then
             probe_result="closed"
         fi
     fi
+}
+
+if $STACK_UP && $HAS_443 && [[ -n "$PUBLIC_IP" ]]; then
+    step "Probing ${PUBLIC_IP}:443 from the internet (via check-host.net)"
+    probe_outside
+
+    # Self-repair: if blocked and the nearest router speaks UPnP, ask it to
+    # open the ports for us, then re-probe. This can only ever fix the
+    # INNERMOST router — UPnP discovery is multicast and does not cross NAT —
+    # so on double NAT the outer layer still needs the human instructions.
+    if [[ "$probe_result" == "closed" && -n "$LAN_IP" ]] && command -v upnpc &>/dev/null; then
+        step "Trying automatic port mapping on the nearest router (UPnP)"
+        if upnpc -e forge -a "$LAN_IP" 443 443 TCP >/dev/null 2>&1 && \
+           upnpc -e forge -a "$LAN_IP" 80 80 TCP >/dev/null 2>&1; then
+            ok "The router accepted UPnP mappings for 80 and 443 — re-probing..."
+            probe_outside
+        else
+            warn "The router refused or does not offer UPnP (often disabled by default)."
+        fi
+    elif [[ "$probe_result" == "closed" ]] && ! command -v upnpc &>/dev/null; then
+        info "(Tip: installing 'miniupnpc' lets this doctor try to open the router"
+        info " automatically via UPnP: sudo apt install miniupnpc — then re-run.)"
+    fi
+
     case "$probe_result" in
         open)
             ok "REACHABLE — the internet can connect to https://${PUBLIC_IP}" ;;
