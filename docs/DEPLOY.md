@@ -466,3 +466,9 @@ docker compose exec forge-api env | grep -i minio
 # See the public URL's path from inside the cloudflared service
 sudo journalctl -u cloudflared -n 50 -f
 ```
+
+## After deploy: outbound email
+
+SMTP is configured at runtime in Admin → Integrations (not via `.env`) and
+defaults to Mock mode, which logs email instead of sending. See
+[email-setup.md](email-setup.md).
