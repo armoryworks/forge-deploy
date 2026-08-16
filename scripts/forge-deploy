@@ -242,7 +242,7 @@ box_service_ids() {
 # Is a compose service scoped out on this box? (reads FORGE_SCOPED_OUT)
 is_scoped_out() {
   local s="$1"
-  printf '%s\n' $(env_get FORGE_SCOPED_OUT 2>/dev/null | tr ',' ' ') | grep -qx "$s"
+  env_get FORGE_SCOPED_OUT 2>/dev/null | tr -s ', ' '\n\n' | grep -qx "$s"
 }
 
 # Pretty one-line scope summary for headers.
@@ -1390,7 +1390,7 @@ role_scoped_out() {
 }
 role_valid() { role_scoped_out "$1" >/dev/null 2>&1; }
 # Does the role run a local forge-<svc>?
-role_runs() { ! printf '%s\n' $(role_scoped_out "$1") | grep -qx "$2"; }
+role_runs() { ! role_scoped_out "$1" | tr -s ' ' '\n' | grep -qx "$2"; }
 
 cmd_setup() {
   if [[ ! -f "$ENV_FILE" ]]; then
@@ -1411,7 +1411,7 @@ cmd_setup() {
     printf '  %s6%s) db        — database + storage only\n' "${C_BOLD}" "${C_RESET}"
     printf 'Choose [1-6]: '
     local c; read -r c
-    case "$c" in 1) role=all;; 2) role=ui+api;; 3) role=api+db;; 4) role=ui;; 5) role=api;; 6) role=db;; *) die "Invalid choice";; esac
+    case "$c" in 1) role=all;; 2) role='ui+api';; 3) role='api+db';; 4) role=ui;; 5) role=api;; 6) role=db;; *) die "Invalid choice";; esac
   fi
   role_valid "$role" || die "Unknown role '$role' (all|ui+api|api+db|ui|api|db)"
   step "Role: $role"

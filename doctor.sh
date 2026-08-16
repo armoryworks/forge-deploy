@@ -18,7 +18,7 @@
 # the operator how to test manually — it never fakes a result.
 
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 step()  { printf '\n\033[36m==> %s\033[0m\n' "$1"; }
 ok()    { printf '    \033[32m[OK] %s\033[0m\n' "$1"; }

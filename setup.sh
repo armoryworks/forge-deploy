@@ -276,7 +276,7 @@ scoped_out_list() {
     grep '^FORGE_SCOPED_OUT=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'\'
 }
 is_scoped_out() {
-    printf '%s\n' $(scoped_out_list) | grep -qx "$1"
+    scoped_out_list | tr -s ', ' '\n\n' | grep -qx "$1"
 }
 # Echo only the args that are NOT scoped out (preserves order).
 keep_unscoped() {
