@@ -2242,7 +2242,16 @@ reconcile_schema() {
       err "Apply failed even with --allow-destructive — aborting"
       return 1
     fi
-    err "DESTRUCTIVE schema changes detected — deploy HALTED. Nothing applied; app NOT swapped."
+    err "DESTRUCTIVE schema changes detected — deploy HALTED. No destructive DDL ran; app NOT swapped."
+    # Not the same as "nothing happened": forge-db's pre-migrate phase (renames and
+    # anything else a state diff cannot express) runs and COMMITS before the plan is
+    # computed. When it did, forge-db says so in the output above — and a rename is
+    # precisely the change the still-running old app cannot survive, so a halt here
+    # is not a safe resting place. Roll forward or restore the pre-reconcile backup.
+    if printf '%s' "$out" | grep -q 'pre-migrate script(s) were already applied'; then
+      warn "Pre-migrate scripts already COMMITTED (see above) — the DB has moved ahead of the running app."
+      warn "Disposition the items below and re-run, or restore the pre-reconcile backup taken above."
+    fi
     printf '\n'
     enumerate_destructive "$(reconcile_forge_db "$net" "$image" plan 2>&1 || true)"
     printf '\n'
