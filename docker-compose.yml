@@ -107,6 +107,7 @@ services:
       - RECREATE_DB=${RECREATE_DB:-false}
       - SEED_DEMO_DATA=${SEED_DEMO_DATA:-false}
       - SEED_USER_PASSWORD=${SEED_USER_PASSWORD:-}
+      - ALLOW_DEMO_DATA_IN_PRODUCTION=${ALLOW_DEMO_DATA_IN_PRODUCTION:-false}
       - ConnectionStrings__DefaultConnection=Host=${DB_HOST:-forge};Port=${DB_PORT:-5432};Database=${POSTGRES_DB:-forge};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
       - Jwt__Key=${JWT_KEY:-dev-secret-key-change-in-production-min-32-chars!!}
       - Jwt__Issuer=${JWT_ISSUER:-forge}
