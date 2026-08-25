@@ -576,6 +576,11 @@ compose() {
   mode=$(env_get QBE_HOSTING_MODE 2>/dev/null | tr -d '[:space:]')
   [[ "$mode" == "cohost" ]] && files+=(-f "$COMPOSE_COHOST")
   files+=(-f "$COMPOSE_PROD")
+  # setup.sh writes public/SSL port bindings into docker-compose.override.yml.
+  # An explicit -f list disables compose's auto-loading of it, so it MUST be
+  # listed here — omitting it recreates containers without their public ports
+  # (loopback-only), silently taking an exposed site off the network.
+  [[ -f "${REPO_ROOT}/docker-compose.override.yml" ]] && files+=(-f "${REPO_ROOT}/docker-compose.override.yml")
   # Remote-API forwarder (written by --remote-api): defines forge-api-proxy.
   [[ -f "$COMPOSE_REMOTE_API" ]] && files+=(-f "$COMPOSE_REMOTE_API")
   # Per-box scope override (written by --wizard): profiles-out services this
