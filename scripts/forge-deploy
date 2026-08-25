@@ -1958,10 +1958,11 @@ version_sha_rows() {
   local -A sha_by_d; local tag dg
   while IFS=$'\t' read -r tag dg; do [[ -n "$dg" ]] && sha_by_d["$dg"]="$tag"; done <<<"$sha_d"
   local v
+  # xargs -P returns rows in completion order — restore version order.
   while IFS=$'\t' read -r v dg; do
     [[ -z "$v" ]] && continue
     printf '%s\t%s\n' "$v" "${sha_by_d[$dg]:-}"
-  done <<<"$ver_d"
+  done <<<"$(printf '%s\n' "$ver_d" | sort -V)"
 }
 
 # Interactive version chooser for ONE component. Renders the version list to
