@@ -2589,7 +2589,7 @@ main() {
       --service=*)       service_arg="${1#*=}"; shift ;;
       --allow-destructive) ALLOW_DESTRUCTIVE=true; shift ;;
       --update)          mode="update"; shift ;;
-      --check)           UPDATE_CHECK=1; shift ;;
+      --check)           UPDATE_CHECK=1; [[ -n "$mode" ]] || mode="update"; shift ;;
       -*)                die "Unknown option: $1 (try --help)" ;;
       *)
         if [[ -n "$positional" ]]; then
@@ -2659,6 +2659,12 @@ main() {
     "")
       # No mode flag — deploy.
       preflight
+      if [[ -z "$positional" && -z "$service_arg" ]]; then
+        # Bare invocation on a configured box: per-component release picker
+        # (Enter keeps current); changes deploy through the gated path.
+        cmd_update_interactive
+        return 0
+      fi
       local services
       if [[ -n "$service_arg" ]]; then
         mapfile -t services < <(parse_service_arg "$service_arg")
