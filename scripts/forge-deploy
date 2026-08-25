@@ -1472,15 +1472,39 @@ cmd_setup() {
     EDGE_HOST="$pub_host" EDGE_UI="127.0.0.1:4200" EDGE_API="$api_target" cmd_edge
   fi
   # 5b. Pick a version for each versioned component (default = newest on first run).
-  local vsvc vrc vchosen
+  # Fresh components are pinned and brought up by cmd_up (empty DB bootstraps
+  # itself). Components with a prior successful deploy are NOT swapped here —
+  # they converge through deploy_service after core is up, so version changes
+  # get schema reconcile, the health gate, state, and the audit log.
+  local vsvc vrc vchosen vcur
+  local -a upgrade_svcs=() upgrade_tags=()
   for vsvc in $(box_service_ids); do
     vrc=0; vchosen=$(pick_component_version "$vsvc") || vrc=$?
     (( vrc == 20 )) && { warn "Setup cancelled before bring-up (run forge-deploy again to resume)."; return 0; }
-    [[ -n "$vchosen" ]] && { validate_tag "$vchosen"; env_set "$(service_envvar "$vsvc")" "$vchosen"; ok "$vsvc pinned to $vchosen"; }
+    [[ -z "$vchosen" ]] && continue
+    validate_tag "$vchosen"
+    vcur=$(state_get "$(service_repo "$vsvc")" current 2>/dev/null || true)
+    if [[ -n "$vcur" && "$vcur" != "$vchosen" ]]; then
+      upgrade_svcs+=("$vsvc"); upgrade_tags+=("$vchosen")
+      ok "$vsvc queued: $vcur -> $vchosen (gated deploy after bring-up)"
+    else
+      env_set "$(service_envvar "$vsvc")" "$vchosen"; ok "$vsvc pinned to $vchosen"
+    fi
   done
 
   # 6. Bring up this box's containers.
   cmd_up
+
+  # 6b. Converge queued version changes through the gated deploy path.
+  local qi
+  for qi in "${!upgrade_svcs[@]}"; do
+    if [[ "${upgrade_svcs[$qi]}" == "api" && "${upgrade_tags[$qi]}" =~ $TAG_RE_SEMVER ]]; then
+      ensure_upgrade_env
+      env_set SCHEMA_IMAGE_TAG "${upgrade_tags[$qi]}"
+    fi
+    deploy_service "${upgrade_svcs[$qi]}" "${upgrade_tags[$qi]}" \
+      || warn "${upgrade_svcs[$qi]} deploy failed (see $LOG_FILE)"
+  done
 
   # 7. Record the role.
   local tmp; tmp=$(mktemp)
