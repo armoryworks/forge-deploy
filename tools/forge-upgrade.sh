@@ -9,6 +9,14 @@
 # Safe to re-run. Requires: Node.js 18+ (npm/npx included), docker.
 set -euo pipefail
 
+# Run as a regular user — the script sudos only where needed. Under sudo,
+# root's PATH usually can't see an nvm-installed node, and fetched files
+# would end up root-owned.
+if [[ $EUID -eq 0 ]]; then
+  echo "Please run as your regular user (not sudo) — it elevates only where needed." >&2
+  exit 1
+fi
+
 DEPLOY_DIR="${FORGE_DEPLOY_DIR:-/opt/forge-deploy}"
 TAG="${1:-}"
 
@@ -17,15 +25,21 @@ if ! command -v npx >/dev/null; then
   exit 1
 fi
 
-# Prerequisites the deploy CLI needs. jq is tiny and universal — install it
-# rather than telling the operator to.
 if ! command -v jq >/dev/null 2>&1; then
-  echo "==> Installing jq (needs sudo once)..."
-  if command -v apt-get >/dev/null 2>&1; then sudo apt-get update -qq && sudo apt-get install -y -qq jq
-  elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y -q jq
-  elif command -v yum >/dev/null 2>&1; then sudo yum install -y -q jq
-  elif command -v apk >/dev/null 2>&1; then sudo apk add --quiet jq
-  else echo "Please install 'jq' with your package manager, then re-run." >&2; exit 1; fi
+  echo "==> Installing jq (may prompt for sudo)..."
+  if command -v apt-get >/dev/null 2>&1; then
+    # Try from the existing package lists first; a broken unrelated repo must
+    # not block a jq install. Tolerate a failing update the same way.
+    sudo apt-get install -y -qq jq 2>/dev/null \
+      || { sudo apt-get update -qq 2>/dev/null || true; sudo apt-get install -y -qq jq || true; }
+  elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y -q jq || true
+  elif command -v yum >/dev/null 2>&1; then sudo yum install -y -q jq || true
+  elif command -v apk >/dev/null 2>&1; then sudo apk add --quiet jq || true
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "Could not install jq automatically — install it manually (e.g. sudo apt install jq), then re-run." >&2
+    exit 1
+  fi
 fi
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker is required: https://docs.docker.com/engine/install/ — then re-run." >&2

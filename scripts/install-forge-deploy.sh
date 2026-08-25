@@ -76,12 +76,14 @@ step "Pre-flight checks"
 # effect).
 if ! command -v jq >/dev/null 2>&1; then
   echo "Installing jq..."
-  if command -v apt-get >/dev/null 2>&1; then apt-get update -qq && apt-get install -y -qq jq
-  elif command -v dnf >/dev/null 2>&1; then dnf install -y -q jq
-  elif command -v yum >/dev/null 2>&1; then yum install -y -q jq
-  elif command -v apk >/dev/null 2>&1; then apk add --quiet jq
-  else die "Required command missing: jq (no known package manager found)"
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get install -y -qq jq 2>/dev/null \
+      || { apt-get update -qq 2>/dev/null || true; apt-get install -y -qq jq || true; }
+  elif command -v dnf >/dev/null 2>&1; then dnf install -y -q jq || true
+  elif command -v yum >/dev/null 2>&1; then yum install -y -q jq || true
+  elif command -v apk >/dev/null 2>&1; then apk add --quiet jq || true
   fi
+  command -v jq >/dev/null 2>&1 || die "Could not install jq automatically — install it manually, then re-run"
 fi
 for cmd in docker curl jq; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
