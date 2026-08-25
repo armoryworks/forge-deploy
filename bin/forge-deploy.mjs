@@ -7,11 +7,18 @@
 //
 // Usage:
 //   npx @armoryworks/forge-deploy [target-dir] [--fetch-only] [setup flags...]
+//   npx @armoryworks/forge-deploy upgrade [tag] [target-dir]
 //
-// The first argument not starting with "-" is the target directory (default
-// ./forge-deploy). Every argument starting with "-" is passed through to
-// setup.sh untouched (--source, --lan, --public, --ssl, ...), except
-// --fetch-only, which downloads the tree and stops. Re-running in an
+// `upgrade` refreshes the deploy tree, then hands off to the gated deploy
+// path (scripts/forge-deploy <tag> or --update when no tag is given):
+// backup -> schema reconcile -> swap -> health gate -> auto-rollback. The
+// target directory defaults to /opt/forge-deploy for upgrades (a tag-looking
+// positional is the tag; anything else is the directory).
+//
+// Otherwise the first argument not starting with "-" is the target directory
+// (default ./forge-deploy). Every argument starting with "-" is passed
+// through to setup.sh untouched (--source, --lan, --public, --ssl, ...),
+// except --fetch-only, which downloads the tree and stops. Re-running in an
 // existing directory refreshes the tracked files and preserves .env,
 // docker-compose.override.yml, and volumes.
 
@@ -25,10 +32,23 @@ import { pipeline } from 'node:stream/promises';
 const TARBALL_URL = 'https://codeload.github.com/armoryworks/forge-deploy/tar.gz/refs/heads/main';
 
 const args = process.argv.slice(2);
+const positionals = args.filter((a) => !a.startsWith('-'));
+const upgradeMode = positionals[0] === 'upgrade';
 const setupArgs = args.filter((a) => a.startsWith('-') && a !== '--fetch-only');
 const fetchOnly = args.includes('--fetch-only');
-const dirArg = args.find((a) => !a.startsWith('-'));
-const targetDir = resolve(dirArg ?? 'forge-deploy');
+
+const TAG_RE = /^v?\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/;
+let upgradeTag = null;
+let dirArg;
+if (upgradeMode) {
+  for (const p of positionals.slice(1)) {
+    if (TAG_RE.test(p)) upgradeTag = p;
+    else dirArg = p;
+  }
+} else {
+  dirArg = positionals[0];
+}
+const targetDir = resolve(dirArg ?? (upgradeMode ? '/opt/forge-deploy' : 'forge-deploy'));
 
 function fail(message) {
   console.error(`forge-deploy: ${message}`);
@@ -66,6 +86,22 @@ if (tar.status !== 0) fail('extraction failed — is tar available on PATH?');
 if (fetchOnly) {
   console.log(`Done. Next: cd ${targetDir} && ./setup.sh`);
   process.exit(0);
+}
+
+if (upgradeMode) {
+  const deployCli = join(targetDir, 'scripts', 'forge-deploy');
+  if (!existsSync(deployCli)) fail('scripts/forge-deploy missing after extraction');
+  if (!existsSync(join(targetDir, '.env'))) {
+    fail(
+      `${targetDir} has no .env — this box was never set up.\n` +
+      `  First-time install: npx @armoryworks/forge-deploy ${targetDir}`,
+    );
+  }
+  chmodSync(deployCli, 0o755);
+  const deployArgs = upgradeTag ? [upgradeTag, ...setupArgs] : ['--update', ...setupArgs];
+  console.log(`Upgrading via scripts/forge-deploy ${deployArgs.join(' ')} ...`);
+  const upgrade = spawnSync('bash', [deployCli, ...deployArgs], { cwd: targetDir, stdio: 'inherit' });
+  process.exit(upgrade.status ?? 1);
 }
 
 let result;
