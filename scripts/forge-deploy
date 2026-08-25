@@ -764,8 +764,16 @@ cmd_status() {
     else
       health_status="not-running"
     fi
+    local running_img running_tag=""
+    if [[ -n "$cid" ]]; then
+      running_img=$(docker inspect --format '{{.Config.Image}}' "$cid" 2>/dev/null || true)
+      running_tag="${running_img##*:}"
+    fi
     printf '%s%s%s\n' "${C_CYAN}" "$svc_id" "${C_RESET}"
     printf '  current:    %s\n' "${cur:-<none>}"
+    if [[ -n "$running_tag" && -n "$cur" && "$running_tag" != "$cur" ]]; then
+      printf '  %srunning:    %s  << differs from last recorded deploy — container was changed outside the deploy path%s\n' "${C_YELLOW}" "$running_tag" "${C_RESET}"
+    fi
     printf '  prior:      %s\n' "${prior:-<none>}"
     printf '  deployedAt: %s\n' "${deployedAt:-<none>}"
     printf '  container:  %s\n\n' "$health_status"
