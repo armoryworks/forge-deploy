@@ -1044,6 +1044,10 @@ else
     # Demo data — only seeded with --seeded flag
     if $SEED_DEMO; then
         sed -i "s|^SEED_DEMO_DATA=true|SEED_DEMO_DATA=true|" .env
+        # Explicit choice — opt past the >=beta.22 demo-data-in-production boot gate.
+        grep -q "^ALLOW_DEMO_DATA_IN_PRODUCTION=" .env \
+            && sed -i "s|^ALLOW_DEMO_DATA_IN_PRODUCTION=.*|ALLOW_DEMO_DATA_IN_PRODUCTION=true|" .env \
+            || echo "ALLOW_DEMO_DATA_IN_PRODUCTION=true" >> .env
         ok "Demo data will be seeded (users, jobs, customers, etc.)"
     else
         sed -i "s|^SEED_DEMO_DATA=true|SEED_DEMO_DATA=false|" .env
