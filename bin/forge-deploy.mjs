@@ -43,7 +43,19 @@ if (!response.ok) fail(`download failed: HTTP ${response.status} from ${TARBALL_
 const tarball = join(tmpdir(), `forge-deploy-${process.pid}.tar.gz`);
 await pipeline(Readable.fromWeb(response.body), createWriteStream(tarball));
 
-mkdirSync(targetDir, { recursive: true });
+try {
+  mkdirSync(targetDir, { recursive: true });
+} catch (err) {
+  if (err.code === 'EACCES') {
+    fail(
+      `no permission to create ${targetDir}.\n` +
+      `  Create it once with the right owner, then re-run:\n` +
+      `    sudo mkdir -p ${targetDir} && sudo chown "$USER": ${targetDir}\n` +
+      `  (or pick a directory you own, e.g.: npx @armoryworks/forge-deploy ~/forge-deploy)`,
+    );
+  }
+  throw err;
+}
 // bsdtar ships with Windows 10+; GNU tar everywhere else — both accept this.
 const tar = spawnSync('tar', ['-xzf', tarball, '--strip-components=1', '-C', targetDir], {
   stdio: 'inherit',
