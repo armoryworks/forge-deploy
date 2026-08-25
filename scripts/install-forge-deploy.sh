@@ -71,6 +71,18 @@ DEPLOY_GROUP=$(id -gn "$DEPLOY_USER")
 
 step "Pre-flight checks"
 
+# jq is tiny and universal — install it rather than dying on it. docker/curl
+# stay hard requirements (installing docker is a real decision, not a side
+# effect).
+if ! command -v jq >/dev/null 2>&1; then
+  echo "Installing jq..."
+  if command -v apt-get >/dev/null 2>&1; then apt-get update -qq && apt-get install -y -qq jq
+  elif command -v dnf >/dev/null 2>&1; then dnf install -y -q jq
+  elif command -v yum >/dev/null 2>&1; then yum install -y -q jq
+  elif command -v apk >/dev/null 2>&1; then apk add --quiet jq
+  else die "Required command missing: jq (no known package manager found)"
+  fi
+fi
 for cmd in docker curl jq; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     die "Required command missing: $cmd (install via your package manager)"

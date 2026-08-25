@@ -98,6 +98,12 @@ if (upgradeMode) {
     );
   }
   chmodSync(deployCli, 0o755);
+  // The deploy CLI needs jq; install it (one sudo) instead of dying on a
+  // preflight message the operator has to decode.
+  const ensure = spawnSync('bash', [join(targetDir, 'scripts', 'ensure-deps.sh')], {
+    cwd: targetDir, stdio: 'inherit',
+  });
+  if (ensure.status !== 0) fail('prerequisites missing (see message above)');
   const deployArgs = upgradeTag ? [upgradeTag, ...setupArgs] : ['--update', ...setupArgs];
   console.log(`Upgrading via scripts/forge-deploy ${deployArgs.join(' ')} ...`);
   const upgrade = spawnSync('bash', [deployCli, ...deployArgs], { cwd: targetDir, stdio: 'inherit' });

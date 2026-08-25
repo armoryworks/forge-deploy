@@ -17,6 +17,21 @@ if ! command -v npx >/dev/null; then
   exit 1
 fi
 
+# Prerequisites the deploy CLI needs. jq is tiny and universal — install it
+# rather than telling the operator to.
+if ! command -v jq >/dev/null 2>&1; then
+  echo "==> Installing jq (needs sudo once)..."
+  if command -v apt-get >/dev/null 2>&1; then sudo apt-get update -qq && sudo apt-get install -y -qq jq
+  elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y -q jq
+  elif command -v yum >/dev/null 2>&1; then sudo yum install -y -q jq
+  elif command -v apk >/dev/null 2>&1; then sudo apk add --quiet jq
+  else echo "Please install 'jq' with your package manager, then re-run." >&2; exit 1; fi
+fi
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Docker is required: https://docs.docker.com/engine/install/ — then re-run." >&2
+  exit 1
+fi
+
 # First run on a box where /opt needs root: create the dir owned by this user.
 if [[ ! -d "$DEPLOY_DIR" ]]; then
   if ! mkdir -p "$DEPLOY_DIR" 2>/dev/null; then
