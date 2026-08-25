@@ -51,6 +51,11 @@
 #   --no-public-preflight  Skip the system-side preflight (assume user has
 #                        nginx/ufw/etc handled). --public still implies
 #                        --standalone --ssl.
+#   --confirm-exposure-change
+#                        Required (or answer the interactive prompt) to run
+#                        --public against an EXISTING install that was set up
+#                        as --lan / --local. Prevents accidentally flipping a
+#                        working LAN appliance to standalone HTTPS.
 #   --local              This machine only: localhost URLs, no network
 #                        exposure changes (the classic dev-workstation
 #                        default). Skips the deployment-target prompt.
@@ -89,6 +94,7 @@ INCLUDE_SIGNING=false
 SSL_FLAG=""   # "" = auto-detect, "force" = --ssl, "skip" = --no-ssl
 MODE_FLAG=""  # "" = auto/use .env, "cohost" or "standalone" force
 PUBLIC=false
+CONFIRM_EXPOSURE=false
 PUBLIC_PREFLIGHT=true
 PUBLIC_HOSTNAME=""
 DEPLOY_TARGET=""  # "" = prompt/saved, "local", "lan", "public"
@@ -127,6 +133,7 @@ while (( $# > 0 )); do
             ;;
         --hostname=*)           PUBLIC_HOSTNAME="${1#--hostname=}" ;;
         --skip-host-watchdog)   SKIP_HOST_WATCHDOG=true ;;
+        --confirm-exposure-change) CONFIRM_EXPOSURE=true ;;
         --doctor)               exec bash "$(dirname "$0")/doctor.sh" ;;
         -h|--help)              show_help; exit 0 ;;
         *) echo "Unknown option: $1"; echo "Run './setup.sh --help' for usage."; exit 1 ;;
@@ -225,6 +232,38 @@ case "$DEPLOY_TARGET" in
         fi
         ;;
 esac
+
+# ─────────────────────────────────────────────────────────────
+# Guard: --public against an existing LAN/local install
+# ─────────────────────────────────────────────────────────────
+# Flipping a working LAN appliance to standalone HTTPS rewrites the base URL,
+# rebinds the UI, and (via preflight) touches host services and UFW. That has
+# taken real customer sites down when run by habit. Require an explicit yes.
+if [[ "$DEPLOY_TARGET" == "public" && -f .env ]]; then
+    PREV_TARGET=$(grep '^QBE_DEPLOY_TARGET=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | xargs || true)
+    if [[ "$PREV_TARGET" == "lan" || "$PREV_TARGET" == "local" ]]; then
+        if ! $CONFIRM_EXPOSURE; then
+            echo ""
+            echo "  ⚠  This install is currently configured as '${PREV_TARGET}'."
+            echo "     --public will switch it to standalone HTTPS:"
+            echo "       - the UI moves to https:// on ports 80/443 (self-signed cert)"
+            echo "       - FRONTEND_BASE_URL / CORS are rewritten away from the LAN address"
+            echo "       - the preflight may stop host services on 80/443 and open UFW rules"
+            echo "     Existing LAN users will lose the http:// address they use today."
+            echo ""
+            if [[ -t 0 ]]; then
+                read -r -p "  Type PUBLIC to continue, anything else to abort: " EXPOSURE_ANSWER
+                if [[ "$EXPOSURE_ANSWER" != "PUBLIC" ]]; then
+                    echo "  Aborted — install left untouched. (Updates: ./refresh.sh or docker compose pull && up -d)"
+                    exit 1
+                fi
+            else
+                echo "  Non-interactive run: pass --confirm-exposure-change to proceed."
+                exit 1
+            fi
+        fi
+    fi
+fi
 
 # ─────────────────────────────────────────────────────────────
 # Deprecation notice for direct invocation
@@ -1148,6 +1187,15 @@ if [[ "$DEPLOY_TARGET" == "lan" ]] && ! $IS_COHOST && ! $ENABLE_SSL; then
     if [[ -n "${HOST_IP:-}" ]]; then
         UI_PORT_CUR=$(grep '^UI_PORT=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | xargs || true)
         UI_PORT_CUR=${UI_PORT_CUR:-4200}
+        # LAN turnkey means port 80 unless the operator chose a custom port.
+        # 4200 is the dev default, not a choice — and a previous --public/--ssl
+        # run leaves it behind (its own port 80/443 publishing lived in the SSL
+        # override, not UI_PORT), which strands LAN users on connection refused.
+        if [[ "$UI_PORT_CUR" == "4200" ]]; then
+            set_env "UI_PORT" "80"
+            UI_PORT_CUR="80"
+            ok "UI_PORT normalized to 80 (LAN turnkey default)"
+        fi
         PORT_SUFFIX=":${UI_PORT_CUR}"
         [[ "$UI_PORT_CUR" == "80" ]] && PORT_SUFFIX=""
         set_env "FRONTEND_BASE_URL" "http://${HOST_IP}${PORT_SUFFIX}"
@@ -1323,6 +1371,17 @@ MEMBLOCK
     ok "Created docker-compose.override.yml"
 fi
 
+# A previously generated override (e.g. SSL from a --public run) that is no
+# longer needed must not linger: in --source mode docker compose auto-loads
+# it, and the exposure inference above reads a stale 443 as "public".
+# Only files carrying our generation marker are touched — hand-written
+# overrides are left alone.
+if ! $NEEDS_OVERRIDE && [[ -f docker-compose.override.yml ]] \
+   && head -1 docker-compose.override.yml | grep -q '^# Auto-generated by setup.sh'; then
+    rm -f docker-compose.override.yml
+    ok "Removed stale auto-generated docker-compose.override.yml"
+fi
+
 # ─────────────────────────────────────────────────────────────
 # 6b. Manage COMPOSE_FILE based on resolved overlays
 # ─────────────────────────────────────────────────────────────
@@ -1475,6 +1534,29 @@ fi
 if $FRESH; then
     set_env "RECREATE_DB" "false"
     ok "Reset RECREATE_DB=false (database won't be wiped on next restart)"
+fi
+
+# ── LAN acceptance check ──
+# Container health says nothing about which host port/interface the UI is
+# published on. Probe the advertised URL so a mis-bound UI is caught here,
+# not by the first user getting "connection refused".
+if [[ "$DEPLOY_TARGET" == "lan" ]] && ! $IS_COHOST && ! $ENABLE_SSL; then
+    LAN_URL=$(grep '^FRONTEND_BASE_URL=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | xargs || true)
+    if [[ -n "$LAN_URL" ]] && command -v curl >/dev/null 2>&1; then
+        step "Verifying LAN reachability: ${LAN_URL}"
+        LAN_OK=false
+        for _ in $(seq 1 10); do
+            if curl -s -o /dev/null -m 3 "$LAN_URL"; then LAN_OK=true; break; fi
+            sleep 3
+        done
+        if $LAN_OK; then
+            ok "UI answers at ${LAN_URL}"
+        else
+            warn "UI did NOT answer at ${LAN_URL} — LAN clients will get 'connection refused'."
+            warn "Check what is actually listening:   ss -ltnp | grep -E ':80 |:4200 '"
+            warn "Then compare UI_BIND / UI_PORT in .env (LAN mode wants UI_BIND=0.0.0.0, UI_PORT=80)."
+        fi
+    fi
 fi
 
 # ─────────────────────────────────────────────────────────────

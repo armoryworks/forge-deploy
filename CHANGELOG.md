@@ -6,6 +6,12 @@ All notable changes to forge-deploy and its packaged images. Format follows [Kee
 
 ### Fixed
 
+- **`--lan` now fully recovers an install that was flipped by `--public`** (field incident, 2026-08-25: a LAN appliance re-run with `--public` left LAN clients on *connection refused* even after `--lan --no-ssl`, with all containers "healthy"). Three healing changes: (1) LAN mode normalizes a leftover `UI_PORT=4200` back to `80` on every run (the dev default is not an operator choice; genuinely custom ports are preserved) — previously the 4200→80 rewrite only ran on a fresh `.env`, so the recovery run advertised/bound the wrong port; (2) a stale **auto-generated** `docker-compose.override.yml` (e.g. the SSL override from a `--public` run) is deleted once no override is needed — it kept auto-loading in `--source` mode and made the exposure inference read the install as "public" forever (hand-written overrides, without the generation marker, are untouched); (3) after starting a LAN install, setup.sh now **probes the advertised `FRONTEND_BASE_URL`** and prints an explicit warning with `ss`/`UI_BIND`/`UI_PORT` guidance when nothing answers — container health alone never verified that the UI was published on the right host port/interface.
+
+### Added
+
+- **Exposure-change guard**: running `--public` against an existing install recorded as `--lan`/`--local` now requires typing `PUBLIC` at an interactive prompt (or passing the new `--confirm-exposure-change` flag in scripts). The prompt spells out the consequences — UI moves to self-signed HTTPS on 80/443, base URL/CORS rewritten away from the LAN address, preflight may stop host services and open UFW. Prevents the habit-run that took a customer LAN site down.
+
 - **setup.sh died silently at the port check when re-run over a live stack as a non-root user** (field report, 2026-07-20). Non-root `ss` can't read root-owned process names (e.g. docker-proxy from the running stack), so the holder-name `grep` matched nothing and its pipefail status killed the script under `set -e` — no error, no output, right after the disk-space check. The port check now tolerates unidentifiable holders (warns and continues; a genuine conflict still surfaces at `compose up` with a clear "port is already allocated"). Same guard applied to the `--public` preflight's `port_listener()` and the `UI_PORT` reads.
 
 ### Added
