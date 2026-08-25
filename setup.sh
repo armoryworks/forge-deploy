@@ -174,6 +174,21 @@ if [[ -z "$DEPLOY_TARGET" && -z "$MODE_FLAG" ]]; then
     esac
 fi
 
+# No flag, no saved answer (installs older than the save mechanism): INFER the
+# target from what this box is already running rather than letting a
+# non-interactive re-run (e.g. recovery) silently downgrade an exposed install
+# back to loopback. UI on port 80 = network-exposed; an SSL override carrying
+# 443 = public.
+if [[ -z "$DEPLOY_TARGET" && -z "$MODE_FLAG" ]]; then
+    if [[ -f docker-compose.override.yml ]] && grep -q '443' docker-compose.override.yml 2>/dev/null; then
+        DEPLOY_TARGET="public"
+        echo "Reusing this install's existing exposure: public (SSL override present)"
+    elif grep -q '^UI_PORT=80$' .env 2>/dev/null; then
+        DEPLOY_TARGET="lan"
+        echo "Reusing this install's existing exposure: lan (UI already on port 80)"
+    fi
+fi
+
 if [[ -z "$DEPLOY_TARGET" && -z "$MODE_FLAG" && -t 0 ]]; then
     echo ""
     echo "How will people reach this Forge install?"
