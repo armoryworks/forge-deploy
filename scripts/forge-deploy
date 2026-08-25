@@ -1253,7 +1253,11 @@ cmd_edge() {
     fi
   else
     err "nginx -t failed — rolling back all edge changes"
-    [[ -n "$prev_bak" ]] && sudo cp "$prev_bak" "$target" || sudo rm -f "$target"
+    if [[ -n "$prev_bak" ]]; then
+      sudo cp "$prev_bak" "$target" || err "Restore of $target from $prev_bak failed — inspect both files"
+    else
+      sudo rm -f "$target"
+    fi
     for f in $conflicts; do
       bak=$(sudo ls -1t "${f}.forge-bak."* 2>/dev/null | head -1); [[ -n "$bak" ]] && sudo cp "$bak" "$f"
     done
