@@ -19,6 +19,8 @@ fi
 
 DEPLOY_DIR="${FORGE_DEPLOY_DIR:-/opt/forge-deploy}"
 TAG="${1:-}"
+shift $(( $# > 0 ? 1 : 0 ))
+EXTRA_ARGS=("$@")   # forwarded to the deploy CLI (e.g. --allow-destructive)
 
 if ! command -v npx >/dev/null; then
   echo "Node.js is required (npx ships with it): https://nodejs.org — then re-run." >&2
@@ -63,10 +65,10 @@ chmod +x scripts/*.sh scripts/forge-deploy 2>/dev/null || true
 
 if [[ -n "$TAG" ]]; then
   echo "==> Deploying release $TAG"
-  ./scripts/forge-deploy "$TAG"
+  ./scripts/forge-deploy "$TAG" "${EXTRA_ARGS[@]}"
 else
   echo "==> Updating to the newest release"
-  ./scripts/forge-deploy --update
+  ./scripts/forge-deploy --update "${EXTRA_ARGS[@]}"
 fi
 
 echo

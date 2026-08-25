@@ -12,7 +12,8 @@
 
 set -euo pipefail
 
-log() { echo "[$(date -u --iso-8601=seconds)] $*"; }
+# BusyBox-safe (the backup image is Alpine): no GNU --iso-8601 long option.
+log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 
 if [[ -z "${POSTGRES_PASSWORD:-}" ]]; then
   log "ERROR: POSTGRES_PASSWORD not set — skipping backup"
