@@ -1087,6 +1087,9 @@ if $FRESH; then
     set_env "RECREATE_DB" "true"
     if $SEED_DEMO; then
         set_env "SEED_DEMO_DATA" "true"
+        # Choosing demo seeding here is an explicit, deliberate decision — opt
+        # past the >=beta.22 accidental-demo-data-in-production boot gate.
+        set_env "ALLOW_DEMO_DATA_IN_PRODUCTION" "true"
     fi
     warn "--fresh: database will be wiped and recreated on next start"
 fi
