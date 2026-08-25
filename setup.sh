@@ -1447,7 +1447,7 @@ if $HEALTHY; then
     ok "API is healthy and accepting requests"
 else
     warn "API health check timed out after ${MAX_WAIT}s"
-    warn "This is normal on first start while migrations run."
+    warn "This can be normal on first start while the schema is provisioned and first-boot seeding runs."
     warn "Check progress: docker compose logs -f forge-api"
 fi
 

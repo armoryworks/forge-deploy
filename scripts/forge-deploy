@@ -39,8 +39,10 @@ readonly REGISTRY_OWNER="armoryworks"
 # endpoint returns 200, so on a populated database a clean deploy routinely
 # needs more than the original fixed 60s — and a premature rollback is risky
 # because the new schema may already be migrated. Override per host via .env
-# (HEALTHCHECK_TIMEOUT_SECS=...) or a shell env var; default 180.
-readonly HEALTHCHECK_TIMEOUT_DEFAULT=180
+# (HEALTHCHECK_TIMEOUT_SECS=...) or a shell env var; default 300 — a release
+# upgrade's first boot runs first-boot seeding/backfills on top of the schema
+# work, and a premature rollback is worse than a slow gate.
+readonly HEALTHCHECK_TIMEOUT_DEFAULT=300
 readonly HEALTHCHECK_POLL_INTERVAL=2
 
 # Service descriptors: service_id|compose_service|image_repo|env_var|healthcheck_kind
@@ -2363,6 +2365,27 @@ deploy_service() {
 # through the exact same gated path as `forge-deploy <tag>`: backup, schema
 # reconcile, health gate, auto-rollback. `--check` only reports (exit 0 =
 # current, 10 = behind) so cron/monitoring can drive it.
+# Release deploys carry schema + seeding expectations with them; set the .env
+# flags they imply instead of asking every operator to remember them:
+#   - ENABLE_SCHEMA_RECONCILE=true: on a populated install the reconcile is the
+#     ONLY thing that brings the schema up to the release (remote-DB boxes still
+#     skip locally inside reconcile_schema).
+#   - ALLOW_DEMO_DATA_IN_PRODUCTION=true, only when SEED_DEMO_DATA=true already:
+#     a box that opted into demo seeding stays bootable past the >=beta.22
+#     accidental-demo-data gate; a real install (SEED_DEMO_DATA unset/false) is
+#     never touched.
+ensure_upgrade_env() {
+  if [[ "$(env_get ENABLE_SCHEMA_RECONCILE 2>/dev/null | tr -d '[:space:]')" != "true" ]]; then
+    env_set ENABLE_SCHEMA_RECONCILE true
+    ok ".env updated: ENABLE_SCHEMA_RECONCILE=true (required to upgrade a populated install)"
+  fi
+  if [[ "$(env_get SEED_DEMO_DATA 2>/dev/null | tr -d '[:space:]')" == "true" ]] \
+     && [[ "$(env_get ALLOW_DEMO_DATA_IN_PRODUCTION 2>/dev/null | tr -d '[:space:]')" != "true" ]]; then
+    env_set ALLOW_DEMO_DATA_IN_PRODUCTION true
+    ok ".env updated: ALLOW_DEMO_DATA_IN_PRODUCTION=true (this box already opts into demo data)"
+  fi
+}
+
 cmd_update() {
   local services=() svc repo tags common="" newest current
   mapfile -t services < <(box_service_ids)
@@ -2397,10 +2420,9 @@ cmd_update() {
     return 10
   fi
 
-  if [[ "$(env_get ENABLE_SCHEMA_RECONCILE 2>/dev/null | tr -d '[:space:]')" == "true" ]]; then
-    env_set SCHEMA_IMAGE_TAG "$newest"
-    ok ".env updated: SCHEMA_IMAGE_TAG=$newest (lockstep with the release)"
-  fi
+  ensure_upgrade_env
+  env_set SCHEMA_IMAGE_TAG "$newest"
+  ok ".env updated: SCHEMA_IMAGE_TAG=$newest (lockstep with the release)"
 
   EXPLICIT_TAG="$newest"
   cmd_deploy "${services[@]}"
@@ -2643,10 +2665,11 @@ main() {
         mapfile -t services < <(box_service_ids)
       fi
       EXPLICIT_TAG="$positional"
-      # Schema moves with the app: an explicit release deploy pins the reconcile
-      # tag in lockstep so the api swap converges the DB to the same release.
-      if [[ -n "$positional" ]] && [[ "$positional" =~ $TAG_RE_SEMVER ]] \
-         && [[ "$(env_get ENABLE_SCHEMA_RECONCILE 2>/dev/null | tr -d '[:space:]')" == "true" ]]; then
+      # Schema moves with the app: a release deploy sets the flags it implies
+      # and pins the reconcile tag in lockstep so the api swap converges the DB
+      # to the same release.
+      if [[ -n "$positional" ]] && [[ "$positional" =~ $TAG_RE_SEMVER ]]; then
+        ensure_upgrade_env
         env_set SCHEMA_IMAGE_TAG "$positional"
         ok ".env updated: SCHEMA_IMAGE_TAG=$positional (lockstep with the release)"
       fi
