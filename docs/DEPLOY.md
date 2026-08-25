@@ -421,16 +421,31 @@ A deploy is complete when:
 
 ### Upgrades
 
+Use the deploy CLI — never bare `docker compose pull`/`up` for a version change.
+EF Core migrations were retired: the app's `SchemaBootstrapper` only provisions a
+FRESH database and is a no-op on an existing one, so on a populated install the
+forge-db schema reconcile is the ONLY thing that brings the schema up to a new
+release. The CLI runs the whole gated sequence: verify the tag exists in GHCR →
+pin `.env` (including `SCHEMA_IMAGE_TAG`, kept in lockstep automatically) →
+fresh backup → schema reconcile → container swap → health gate → automatic
+rollback of the pin if anything fails.
+
 ```bash
 cd /opt/forge-deploy
-git pull                              # pick up any compose / config changes
-docker compose pull                   # pull latest image tags referenced in .env
-docker compose up -d                  # recreate containers that have new images
-docker compose logs forge-api --tail 50    # confirm clean startup, no DI/migration errors
-curl -s http://localhost:5000/api/v1/health | jq
+
+# one-time on installs created before schema reconcile existed:
+#   .env: ENABLE_SCHEMA_RECONCILE=true   (SCHEMA_IMAGE_TAG is pinned for you)
+
+./scripts/forge-deploy --update            # catch up to the newest release
+./scripts/forge-deploy --update --check    # report only: exit 0 = current, 10 = behind
+./scripts/forge-deploy 1.0.0-beta.22       # or deploy a specific release
 ```
 
-forge-api applies any pending EF Core migrations automatically on startup. There is no manual migration step. This is convenient for forward deploys but has a hard implication for rollbacks (see below).
+If the release carries destructive schema changes, the reconcile HALTS and
+enumerates them instead of applying; review, then re-run with
+`--allow-destructive` to approve. To refresh the deploy tree itself (compose
+files, scripts — preserves `.env`, overrides, and volumes):
+`npx @armoryworks/forge-deploy /opt/forge-deploy`.
 
 ### Rollbacks
 
