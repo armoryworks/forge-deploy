@@ -126,6 +126,9 @@ USAGE:
   forge-deploy <tag>                  Deploy a specific tag to this box's components (or --service)
   forge-deploy <tag> --allow-destructive  Pre-approve destructive schema changes during reconcile
                                       (skips the halt+enumerate; only with ENABLE_SCHEMA_RECONCILE=true)
+  forge-deploy --update               Update this box to the newest release shared by ALL of its
+                                      components (exact same gated path as 'forge-deploy <tag>')
+  forge-deploy --update --check       Report only — exit 0 = current, 10 = behind (cron/monitoring)
   forge-deploy --service <name>       Narrow to one service (api | ui | test | demo | all) — scoped to this box
   forge-deploy --components [list]    Show / set this box's components (e.g. --components "ui")
   forge-deploy --wizard               Interactive: REMOVE installed components from this box
@@ -2353,6 +2356,56 @@ deploy_service() {
   return 1
 }
 
+# ─────────────────────────────────────────────────────────────
+# Update-to-latest — the client-side "am I behind?" path.
+# The newest released (semver) tag shared by EVERY versioned component this box
+# runs (intersection, so a half-published release is never offered), deployed
+# through the exact same gated path as `forge-deploy <tag>`: backup, schema
+# reconcile, health gate, auto-rollback. `--check` only reports (exit 0 =
+# current, 10 = behind) so cron/monitoring can drive it.
+cmd_update() {
+  local services=() svc repo tags common="" newest current
+  mapfile -t services < <(box_service_ids)
+  (( ${#services[@]} )) || die "No components configured on this box (run --setup first)"
+
+  for svc in "${services[@]}"; do
+    repo=$(service_repo "$svc")
+    tags=$(ghcr_list_tags "$repo" 2>/dev/null | grep -E "$TAG_RE_SEMVER" || true)
+    [[ -n "$tags" ]] || die "Couldn't list released versions for '$svc' — registry unreachable, or run: docker login ghcr.io"
+    if [[ -z "$common" ]]; then
+      common="$tags"
+    else
+      common=$(comm -12 <(sort <<<"$common") <(sort <<<"$tags"))
+    fi
+  done
+  newest=$(sort -V <<<"$common" | tail -1)
+  [[ -n "$newest" ]] || die "No release tag is published for every component on this box"
+
+  local out_of_date=()
+  for svc in "${services[@]}"; do
+    current=$(env_get "$(service_envvar "$svc")" | tr -d '[:space:]')
+    [[ "$current" == "$newest" ]] || out_of_date+=("${svc}=${current:-unset}")
+  done
+
+  if (( ${#out_of_date[@]} == 0 )); then
+    ok "Up to date — every component is on $newest"
+    return 0
+  fi
+
+  warn "Behind: newest release is $newest (current: ${out_of_date[*]})"
+  if [[ "${UPDATE_CHECK:-0}" == "1" ]]; then
+    return 10
+  fi
+
+  if [[ "$(env_get ENABLE_SCHEMA_RECONCILE 2>/dev/null | tr -d '[:space:]')" == "true" ]]; then
+    env_set SCHEMA_IMAGE_TAG "$newest"
+    ok ".env updated: SCHEMA_IMAGE_TAG=$newest (lockstep with the release)"
+  fi
+
+  EXPLICIT_TAG="$newest"
+  cmd_deploy "${services[@]}"
+}
+
 cmd_deploy() {
   local target_services=("$@")  # space-separated svc_ids
   local explicit_tag="${EXPLICIT_TAG:-}"
@@ -2512,6 +2565,8 @@ main() {
         service_arg="$2"; shift 2 ;;
       --service=*)       service_arg="${1#*=}"; shift ;;
       --allow-destructive) ALLOW_DESTRUCTIVE=true; shift ;;
+      --update)          mode="update"; shift ;;
+      --check)           UPDATE_CHECK=1; shift ;;
       -*)                die "Unknown option: $1 (try --help)" ;;
       *)
         if [[ -n "$positional" ]]; then
@@ -2574,6 +2629,10 @@ main() {
       RECOVERY_ENTRY="forge-deploy --fresh-start"
       cmd_fresh_start
       ;;
+    update)
+      preflight
+      cmd_update
+      ;;
     "")
       # No mode flag — deploy.
       preflight
@@ -2584,6 +2643,13 @@ main() {
         mapfile -t services < <(box_service_ids)
       fi
       EXPLICIT_TAG="$positional"
+      # Schema moves with the app: an explicit release deploy pins the reconcile
+      # tag in lockstep so the api swap converges the DB to the same release.
+      if [[ -n "$positional" ]] && [[ "$positional" =~ $TAG_RE_SEMVER ]] \
+         && [[ "$(env_get ENABLE_SCHEMA_RECONCILE 2>/dev/null | tr -d '[:space:]')" == "true" ]]; then
+        env_set SCHEMA_IMAGE_TAG "$positional"
+        ok ".env updated: SCHEMA_IMAGE_TAG=$positional (lockstep with the release)"
+      fi
       cmd_deploy "${services[@]}"
       ;;
     *)
