@@ -151,6 +151,13 @@ services:
       - Stamps__Environment=${STAMPS_ENVIRONMENT:-sandbox}
       - Seq__ServerUrl=${SEQ_SERVER_URL:-}
       - Seq__ApiKey=${SEQ_API_KEY:-}
+      # Mobile app: instance identity for enrollment QR + /.well-known, the
+      # edge certificate fingerprint for TOFU pinning, and the optional DSN of
+      # this box's own crash-reporting service (see forge-crash below).
+      - Mobile__InstanceName=${MOBILE_INSTANCE_NAME:-Forge}
+      - Mobile__CertSha256=${MOBILE_CERT_SHA256:-}
+      - Mobile__MinAppVersion=${MOBILE_MIN_APP_VERSION:-1.0.0}
+      - Mobile__CrashReportingDsn=${MOBILE_CRASH_DSN:-}
       - APP_VERSION=${APP_VERSION:-dev}
       - GIT_COMMIT=${GIT_COMMIT:-}
     volumes:
@@ -323,6 +330,82 @@ services:
           memory: 512M
     restart: unless-stopped
 
+  # Optional, self-hosted crash reporting for the mobile app (Sentry-compatible).
+  # Off on every box unless it opts in with COMPOSE_PROFILES=crash-reporting.
+  # After first start: create an org + project in the GlitchTip UI, copy the
+  # project DSN into MOBILE_CRASH_DSN, restart forge-api. Phones then report
+  # crashes here and nowhere else.
+  forge-crash:
+    image: glitchtip/glitchtip:latest
+    container_name: forge-crash
+    depends_on:
+      - forge-crash-db
+      - forge-crash-cache
+    environment:
+      - DATABASE_URL=postgres://glitchtip:${CRASH_DB_PASSWORD:-glitchtip}@forge-crash-db:5432/glitchtip
+      - REDIS_URL=redis://forge-crash-cache:6379/0
+      - SECRET_KEY=${CRASH_SECRET_KEY:-change-me-in-production}
+      - GLITCHTIP_DOMAIN=${CRASH_PUBLIC_URL:-http://localhost:8010}
+      - ENABLE_USER_REGISTRATION=False
+      - ENABLE_ORGANIZATION_CREATION=True
+      - GLITCHTIP_MAX_EVENT_LIFE_DAYS=${CRASH_RETENTION_DAYS:-90}
+      - CELERY_WORKER_AUTOSCALE=1,1
+    ports:
+      - "${CRASH_BIND:-127.0.0.1}:${CRASH_PORT:-8010}:8080"
+    volumes:
+      - crashdata:/code/uploads
+    profiles:
+      - crash-reporting
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    restart: unless-stopped
+
+  forge-crash-worker:
+    image: glitchtip/glitchtip:latest
+    container_name: forge-crash-worker
+    command: ./bin/run-celery-with-beat.sh
+    depends_on:
+      - forge-crash-db
+      - forge-crash-cache
+    environment:
+      - DATABASE_URL=postgres://glitchtip:${CRASH_DB_PASSWORD:-glitchtip}@forge-crash-db:5432/glitchtip
+      - REDIS_URL=redis://forge-crash-cache:6379/0
+      - SECRET_KEY=${CRASH_SECRET_KEY:-change-me-in-production}
+      - GLITCHTIP_DOMAIN=${CRASH_PUBLIC_URL:-http://localhost:8010}
+      - GLITCHTIP_MAX_EVENT_LIFE_DAYS=${CRASH_RETENTION_DAYS:-90}
+      - CELERY_WORKER_AUTOSCALE=1,1
+    volumes:
+      - crashdata:/code/uploads
+    profiles:
+      - crash-reporting
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    restart: unless-stopped
+
+  forge-crash-db:
+    image: postgres:16-alpine
+    container_name: forge-crash-db
+    environment:
+      - POSTGRES_DB=glitchtip
+      - POSTGRES_USER=glitchtip
+      - POSTGRES_PASSWORD=${CRASH_DB_PASSWORD:-glitchtip}
+    volumes:
+      - crashpgdata:/var/lib/postgresql/data
+    profiles:
+      - crash-reporting
+    restart: unless-stopped
+
+  forge-crash-cache:
+    image: valkey/valkey:8-alpine
+    container_name: forge-crash-cache
+    profiles:
+      - crash-reporting
+    restart: unless-stopped
+
   forge-signing:
     image: docuseal/docuseal:latest
     container_name: forge-signing
@@ -347,3 +430,5 @@ volumes:
   docusealdata:
   ttsdata:
   seqdata:
+  crashdata:
+  crashpgdata:
