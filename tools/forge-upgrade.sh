@@ -78,7 +78,3 @@ else
   echo "==> Updating to the newest release"
   ./scripts/forge-deploy --update "${EXTRA_ARGS[@]}"
 fi
-
-echo
-echo "If the deploy halted listing DESTRUCTIVE schema changes, review them, then re-run:"
-echo "  cd $DEPLOY_DIR && ./scripts/forge-deploy ${TAG:---update} --allow-destructive"

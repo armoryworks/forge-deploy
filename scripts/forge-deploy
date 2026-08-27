@@ -22,7 +22,7 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-readonly FORGE_DEPLOY_VERSION="0.6.1"
+readonly FORGE_DEPLOY_VERSION="0.7.0"
 readonly REPO_ROOT="${FORGE_DEPLOY_REPO:-/opt/forge-deploy}"
 readonly STATE_DIR="/etc/forge"
 readonly STATE_FILE="${STATE_DIR}/deploy-state.json"
@@ -127,7 +127,8 @@ USAGE:
                                       version per component (Enter keeps current, r=re-setup, q=quit)
   forge-deploy <tag>                  Deploy a specific tag to this box's components (or --service)
   forge-deploy <tag> --allow-destructive  Pre-approve destructive schema changes during reconcile
-                                      (skips the halt+enumerate; only with ENABLE_SCHEMA_RECONCILE=true)
+                                      (skips the halt+enumerate; only with ENABLE_SCHEMA_RECONCILE=true;
+                                       refused when SUPPORT_CONTACT is set in .env)
   forge-deploy --update               Update this box to the newest release shared by ALL of its
                                       components (exact same gated path as 'forge-deploy <tag>')
   forge-deploy --update --check       Report only — exit 0 = current, 10 = behind (cron/monitoring)
@@ -2210,6 +2211,14 @@ reconcile_forge_db() {
   docker run --rm --network "$net" "$image" "$@" --db "$(reconcile_db_url)"
 }
 
+# A supported install records who approves destructive schema changes. Its
+# presence marks this box as customer-operated: the operator in front of it is
+# not the person who can decide what a DROP costs, so the bypass is withheld
+# rather than merely discouraged.
+support_contact() {
+  env_get SUPPORT_CONTACT | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
 # Pull destructive DDL out of a `forge-db plan` rendering and present it numbered
 # for the operator's disposition (the agreed ok-to-drop / can't-until / cannot form).
 enumerate_destructive() {
@@ -2222,7 +2231,12 @@ enumerate_destructive() {
     fi
   done <<< "$plan_text"
   (( n == 0 )) && printf '      (see the forge-db output above for the flagged statements)\n'
-  printf '\n      For each, reply: 1 - ok to delete / 2 - cannot until x,y,z / 3 - cannot delete\n'
+  local support; support=$(support_contact)
+  if [[ -n "$support" ]]; then
+    printf '\n      Send this list to %s — they decide what can be dropped.\n' "$support"
+  else
+    printf '\n      For each, reply: 1 - ok to delete / 2 - cannot until x,y,z / 3 - cannot delete\n'
+  fi
 }
 
 # Reconcile the live schema before the app swap. Returns 0 to proceed, 1 to abort.
@@ -2269,6 +2283,12 @@ reconcile_schema() {
   docker pull "$image" >/dev/null 2>&1 || true
 
   local allow="${ALLOW_DESTRUCTIVE:-false}" out rc=0
+  local support; support=$(support_contact)
+  if [[ "$allow" == "true" && -n "$support" ]]; then
+    err "--allow-destructive is not available on this install."
+    err "Destructive schema changes are approved by your Forge support contact: ${support}"
+    return 1
+  fi
   step "  Applying schema"
   out=$(reconcile_forge_db "$net" "$image" apply --env prod --yes --backup-taken 2>&1) || rc=$?
   printf '%s\n' "$out" | sed 's/^/      /'
@@ -2302,7 +2322,11 @@ reconcile_schema() {
     printf '\n'
     enumerate_destructive "$(reconcile_forge_db "$net" "$image" plan 2>&1 || true)"
     printf '\n'
-    err "Re-run the deploy with --allow-destructive once the items above are dispositioned."
+    if [[ -n "$support" ]]; then
+      err "Contact ${support} with the list above. Do not re-run until they have answered."
+    else
+      err "Re-run the deploy with --allow-destructive once the items above are dispositioned."
+    fi
     return 1
   fi
 

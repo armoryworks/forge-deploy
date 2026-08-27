@@ -2,6 +2,22 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.7.0] - 2026-08-27
+
+### Changed
+
+- **The npm bootstrapper now fetches a PINNED release tree, not `main`** (`bin/install.mjs`). `TARBALL_URL` resolved `refs/heads/main`, so a client running `npx @armoryworks/forge-deploy upgrade` received whatever had landed on main minutes earlier — the deploy CLI, every compose file, and setup.sh included. Pinning the npm version only ever pinned the ~50-line bootstrapper. The tree ref is now `v0.7.0`; a missing tag is a hard failure with an explanatory message, never a silent fall back to main. `FORGE_DEPLOY_REF` (`heads/main`, `tags/vX.Y.Z`, or a bare tag) overrides it for development.
+
+- **`--allow-destructive` is refused on customer-operated installs.** New `.env` key `SUPPORT_CONTACT`: when set, a reconcile that would drop data still halts and enumerates, but names the contact instead of printing the flag that bypasses the halt, and passing the flag is an error. The disposition prompt ("1 - ok to delete / 2 - cannot until x,y,z / 3 - cannot delete") is addressed to whoever can price the loss; the operator in front of a client box is not that person. Unset (the default) preserves the existing behaviour exactly.
+
+- `tools/forge-upgrade.sh` no longer prints the `--allow-destructive` re-run command as unconditional trailing boilerplate after *every* run, successful or not.
+
+### Added
+
+- **`npx @armoryworks/forge-deploy recover [dir]`** — the doctor (`forge-deploy --recover`) was unreachable from the npm path: in `upgrade` mode flags are appended to `--update` (so `upgrade --recover` became `--update --recover`), and the plain path hands off to `setup.sh`. It is the tool most useful to an operator working alone. Unlike `upgrade` it does not require a configured box — a half-finished install is what it exists for.
+
+- **Node version gate before the implementation loads** (`bin/forge-deploy.mjs` is now a shim over `bin/install.mjs`). `fetch` and `Readable.fromWeb` fail on Node < 18 as a bare `ReferenceError` naming neither Node nor the version; `engines` only makes npm warn. The shim contains nothing newer than dynamic `import()`, checks the major version, and prints install instructions.
+
 ## [Unreleased]
 
 ### Fixed
