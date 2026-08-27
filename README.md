@@ -5,21 +5,38 @@ manufacturers and job shops — jobs, scheduling, inventory, purchasing,
 sales, quality, maintenance, and shop-floor kiosks, running entirely on
 your own hardware via Docker.
 
-This package is a thin bootstrapper. It downloads the current deploy tree
-from [armoryworks/forge-deploy](https://github.com/armoryworks/forge-deploy)
-and hands off to the setup script, which pulls prebuilt multi-arch images
-(amd64 + arm64) from GHCR and brings the stack up. You always get the
-latest deploy configuration — no waiting on an npm release.
+This package is a thin bootstrapper. It downloads a **pinned release** of the
+deploy tree from [armoryworks/forge-deploy](https://github.com/armoryworks/forge-deploy)
+and hands off to it. The tree pulls prebuilt multi-arch images (amd64 + arm64)
+from GHCR and brings the stack up. The tree is pinned to a tested tag, not to
+`main`, so the package version you run determines exactly what you get — and
+the tool tells you when a newer one is published.
 
-## Quick start
+## Already have Forge installed?
+
+One command, no arguments:
 
 ```bash
 npx @armoryworks/forge-deploy
 ```
 
-That fetches the deploy tree into `./forge-deploy` and runs interactive
-setup. It auto-detects platform, architecture, and available resources,
-and asks how you want to deploy (this machine only / LAN / public).
+It opens a guided console: what is installed, whether it is healthy, whether a
+newer release exists, and a short numbered menu — upgrade, repair, history,
+quit. If a newer installer is available it offers that first, applies it, and
+reopens itself. Every action runs the same gated path (backup → schema
+reconcile → swap → health gate → automatic rollback), so nothing the menu can
+do skips a safeguard.
+
+## First install
+
+```bash
+npx @armoryworks/forge-deploy
+```
+
+On a machine with no Forge on it, the same command fetches the deploy tree into
+`./forge-deploy` and runs interactive setup. It auto-detects platform,
+architecture, and available resources, and asks how you want to deploy (this
+machine only / LAN / public).
 
 Common variants:
 

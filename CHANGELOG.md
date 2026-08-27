@@ -2,6 +2,32 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.0] - 2026-08-27
+
+### Added
+
+- **The guided console — `forge-deploy` with no arguments.** The whole customer-facing surface is now one command that takes no flags and assumes no knowledge of the deploy model. It reads the machine, reports what is installed and whether it is healthy in plain language, says whether a newer release exists, and offers a short numbered menu with exactly one entry marked *(recommended)*. Every action is the same gated path the flags drive — the console cannot skip a gate. It covers every state of a box: never bootstrapped, installed but with no role chosen, unhealthy, behind, or current. On a machine that is not a terminal it prints the picture and the non-interactive command instead of hanging.
+
+- **A stale installer is offered as the first step, not forced.** The console compares the npm package that delivered this tree (recorded in `.installer-version` at fetch time) against what `@armoryworks/forge-deploy` publishes now. If it is behind, that becomes menu entry 1 and carries the recommendation, because updating the tool may fix whatever else is wrong. Choosing it fetches the new installer and reopens the console automatically. The `exec` happens *before* the download for a reason documented at the call site: bash reads a script incrementally, and the fetch overwrites the file the function is running from.
+
+- **`tools/test-console.sh`** — 43 assertions across 16 scenarios, driving the console on a real pty with `docker`, `curl`, `npx` and `sudo` all stubbed, so every branch runs on a machine with no Docker daemon at all. This is the first automated coverage of any interactive path in this repo, and it caught two real bugs on its first run (both fixed below). `FORGE_TEST_SHOW=1` prints each screen in full.
+
+- `forge-deploy --pick` preserves the old bare-invocation behaviour (per-component release picker) as operator tooling.
+
+### Changed
+
+- `main()` no longer branches on zero-args before flag parsing (recovery doctor / setup wizard / version picker). Every one of those states is a menu entry in the console now, and the pre-emptive `preflight` that could `die()` in front of a client is gone.
+- The npm bootstrapper opens the console on a box that is already configured, instead of re-running `setup.sh`. `npx @armoryworks/forge-deploy` is now the single command worth remembering.
+- `STATE_DIR` and `LOG_FILE` honour `FORGE_STATE_DIR` / `FORGE_LOG_FILE`, so the tooling can be exercised outside `/etc` and `/var/log`.
+- `docs/DEPLOY.md` §12 leads with the console; the operator flags follow it.
+
+### Fixed
+
+- **A Docker permission error was reported as "Docker is not running".** `docker info 2>&1 | grep -q 'permission denied'` under `set -o pipefail` returns the failure of `docker`, not the result of `grep`, so the branch could never be reached — every permission problem produced advice to start a daemon that was already running. Output is captured before matching now. Found by the new harness.
+- **The menu could abort the script before printing.** Labels were built with `"…$( [[ cond ]] && printf ' (recommended)' )"`; when the condition was false the command substitution returned non-zero and `set -e` took the console down mid-render. Rebuilt with explicit `if` blocks, and the recommendation is now assigned once by urgency.
+- `console_menu` retries are bounded at three: a closed stdin or a stuck key can no longer leave the tool spinning on a client's server.
+- **`docs/DEPLOY.md` "Rollbacks" still described EF Core auto-migrations** — retired 2026-06-17 — five weeks after the Upgrades section next to it was corrected for the same reason. Rewritten: the automatic rollback covers the health-gate failure, manual rollback needs the pre-reconcile dump restored, and `SCHEMA_IMAGE_TAG` must be re-pinned with the image tags or the next deploy re-applies what was backed out. The matching *Known issues* entry above is corrected too.
+
 ## [0.7.0] - 2026-08-27
 
 ### Changed
@@ -78,7 +104,7 @@ All notable changes to forge-deploy and its packaged images. Format follows [Kee
 - **`forge-api` uses MinIO root credentials directly.** `docker-compose.yml:44-45` wires `Minio__AccessKey=${MINIO_ROOT_USER}` and `Minio__SecretKey=${MINIO_ROOT_PASSWORD}`. There is no separate scoped IAM user with bucket-only access. Acceptable on private-tunnel deployments; should be addressed before any deployment with broader network exposure. Fix is a forge-api change to consume a separate `MINIO_API_USER` / `MINIO_API_PASSWORD` plus a deploy-time `mc admin user add` step.
 - **Preset documentation drift.** Earlier deploy notes referenced "PRESET-03 Plastics Manufacturing." `PresetCatalog.cs` lists PRESET-03 as **Distribution / Wholesale**. There is no Plastics-named preset. Applying PRESET-03 to a plastics manufacturer would disable BOM, Routing, WorkCenters, and all `MFG-*` capabilities — the opposite of intent. Operators must read the catalog at deploy time, not trust hand-off documents.
 - **No `FORGE_PRESET` env var exists.** Preset application is admin-UI only via `POST /api/v1/presets/{id}/apply`. If reproducible/IaC-friendly preset application becomes a real requirement, it must be built; it cannot be configured around.
-- **EF Core auto-migrations make rollback non-trivial.** forge-api applies pending migrations on startup. The DB schema is always at-or-ahead of whatever image last ran successfully. Rolling back to an older image requires restoring Postgres from a backup taken before the upgrade. Any release shipping a migration should add a "downgrade requires manual rollback from backup" note to its CHANGELOG entry.
+- **Rollback to an older release needs the database restored too.** (Corrected 2026-08-27 — this entry previously described EF Core auto-migrations, retired 2026-06-17.) Schema now comes from the forge-db reconcile, which runs *before* the app swap, so after a successful upgrade the database is at-or-ahead of the release you would return to; re-pinning an older image alone fails against it. `forge-deploy`'s own automatic rollback (health gate fails → previous tag re-pinned) is unaffected and needs none of this. Manual rollback = restore the pre-reconcile `pg_dump`, then re-pin `SERVER_IMAGE_TAG`, `UI_IMAGE_TAG` **and** `SCHEMA_IMAGE_TAG` together. Any release whose reconcile drops or rewrites anything must carry a "downgrade requires manual rollback from backup" note.
 - **`SEED_USER_PASSWORD` is one-shot.** Changing the value in `.env` and re-deploying does not rotate the seeded admin's password if the Identity row already exists. Rotate via the admin UI, or wipe the DB and re-seed.
 
 ---

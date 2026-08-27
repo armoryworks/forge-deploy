@@ -30,13 +30,18 @@
 // docker-compose.override.yml, and volumes.
 
 import { spawnSync } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, chmodSync, rmSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, chmodSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-const DEFAULT_TREE_TAG = 'v0.7.0';
+const PKG_VERSION = JSON.parse(
+  readFileSync(join(dirname(dirname(fileURLToPath(import.meta.url))), 'package.json'), 'utf8'),
+).version;
+
+const DEFAULT_TREE_TAG = 'v0.8.0';
 
 // Accept `v0.7.0`, `tags/v0.7.0`, or `heads/main` (development) alike.
 const rawRef = (process.env.FORGE_DEPLOY_REF ?? DEFAULT_TREE_TAG).replace(/^refs\//, '');
@@ -104,6 +109,10 @@ const tar = spawnSync('tar', ['-xzf', tarball, '--strip-components=1', '-C', tar
 rmSync(tarball, { force: true });
 if (tar.status !== 0) fail('extraction failed — is tar available on PATH?');
 
+// The tree does not otherwise know which npm package delivered it; the console
+// compares this against the registry to offer the tool update.
+writeFileSync(join(targetDir, '.installer-version'), `${PKG_VERSION}\n`);
+
 if (fetchOnly) {
   console.log(`Done. Next: cd ${targetDir} && ./setup.sh`);
   process.exit(0);
@@ -132,6 +141,21 @@ if (subcommand) {
   console.log(`Running scripts/forge-deploy ${deployArgs.join(' ')} ...`);
   const run = spawnSync('bash', [deployCli, ...deployArgs], { cwd: targetDir, stdio: 'inherit' });
   process.exit(run.status ?? 1);
+}
+
+// A configured box has nothing to install — hand it the guided console. This
+// is what makes `npx @armoryworks/forge-deploy` the one command to remember.
+if (process.platform !== 'win32' && existsSync(join(targetDir, '.env'))) {
+  const deployCli = join(targetDir, 'scripts', 'forge-deploy');
+  if (existsSync(deployCli)) {
+    chmodSync(deployCli, 0o755);
+    const ensure = spawnSync('bash', [join(targetDir, 'scripts', 'ensure-deps.sh')], {
+      cwd: targetDir, stdio: 'inherit',
+    });
+    if (ensure.status !== 0) fail('prerequisites missing (see message above)');
+    const console_ = spawnSync('bash', [deployCli, ...setupArgs], { cwd: targetDir, stdio: 'inherit' });
+    process.exit(console_.status ?? 1);
+  }
 }
 
 let result;

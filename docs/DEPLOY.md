@@ -430,16 +430,32 @@ pin `.env` (including `SCHEMA_IMAGE_TAG`, kept in lockstep automatically) →
 fresh backup → schema reconcile → container swap → health gate → automatic
 rollback of the pin if anything fails.
 
+**On a client box there is one command, and it takes no arguments:**
+
+```bash
+npx @armoryworks/forge-deploy        # or, if the tree is already there: forge-deploy
+```
+
+That is the guided console. It checks the machine, reports what is installed and
+whether it is healthy, says whether a newer release exists, and offers a short
+numbered menu — update the tool, upgrade Forge, repair, show history, quit. Every
+entry runs the same gated path as the flags below, so it cannot skip a gate. If a
+newer installer is published it offers that first, applies it, and reopens itself.
+
+Operator flags, for scripting and for your own boxes:
+
 ```bash
 cd /opt/forge-deploy
-
-# one-time on installs created before schema reconcile existed:
-#   .env: ENABLE_SCHEMA_RECONCILE=true   (SCHEMA_IMAGE_TAG is pinned for you)
 
 ./scripts/forge-deploy --update            # catch up to the newest release
 ./scripts/forge-deploy --update --check    # report only: exit 0 = current, 10 = behind
 ./scripts/forge-deploy 1.0.0-beta.22       # or deploy a specific release
+./scripts/forge-deploy --pick              # per-component picker (was the old bare behaviour)
 ```
+
+`ENABLE_SCHEMA_RECONCILE=true` and a lockstep `SCHEMA_IMAGE_TAG` are set for you by
+any release deploy — no one has to remember them on an install that predates the
+schema reconcile.
 
 If the release carries destructive schema changes, the reconcile HALTS and
 enumerates them instead of applying; review, then re-run with
@@ -449,17 +465,30 @@ files, scripts — preserves `.env`, overrides, and volumes):
 
 ### Rollbacks
 
-Because migrations are applied at startup and are forward-only, the database schema is always at-or-ahead of whatever image last ran successfully. Deploying an older image against a newer schema will fail at startup with EF Core errors.
+**Most of the time you do not need this section.** If the new image fails its
+health gate, `forge-deploy` re-pins the previous tag and recreates the
+container by itself — the schema reconcile ran, but the app never took, and
+nothing else was touched.
 
-The safe rollback procedure is:
+Manual rollback is only for the case where the new version comes up healthy and
+you then decide to go back. EF migrations were retired 2026-06-17: schema now
+comes from the forge-db reconcile, which runs BEFORE the app swap, so after a
+successful upgrade the database is at-or-ahead of the release you want to
+return to. Re-pinning an older image alone will fail against it — the schema has
+to come back too, and the only route to that is the backup.
 
-1. Stop forge-api: `docker compose stop forge-api`.
-2. Identify the latest forge-backup `pg_dump` taken *before* the upgrade you're rolling back from.
+1. Stop forge-api: `forge-deploy compose stop forge-api`.
+2. Take the `pg_dump` that the reconcile wrote immediately before it applied —
+   it is the newest file in `<deploy dir>/backups` older than the upgrade, and
+   the deploy log (`forge-deploy --logs`) timestamps the run.
 3. Restore that dump into the `forge` (Postgres) container.
-4. Pin the older image tag in `.env` (`SERVER_IMAGE_TAG=<older-tag>`).
-5. `docker compose up -d --force-recreate forge-api`.
+4. Pin the older tags in `.env` — `SERVER_IMAGE_TAG`, `UI_IMAGE_TAG`, and
+   `SCHEMA_IMAGE_TAG` together; leaving `SCHEMA_IMAGE_TAG` forward means the
+   next deploy re-applies the schema you just backed out.
+5. `forge-deploy compose up -d --force-recreate forge-api`.
 
-Any release that ships a schema migration must add a note to its CHANGELOG entry: "downgrade requires manual rollback from backup."
+A release whose reconcile drops or rewrites anything must say so in its
+CHANGELOG entry: "downgrade requires manual rollback from backup."
 
 ---
 
