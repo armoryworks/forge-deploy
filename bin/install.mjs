@@ -52,7 +52,7 @@ const PKG_VERSION = JSON.parse(
   readFileSync(join(dirname(dirname(fileURLToPath(import.meta.url))), 'package.json'), 'utf8'),
 ).version;
 
-const DEFAULT_TREE_TAG = 'v0.8.4';
+const DEFAULT_TREE_TAG = 'v0.8.5';
 
 // Accept `v0.7.0`, `tags/v0.7.0`, or `heads/main` (development) alike.
 const rawRef = (process.env.FORGE_DEPLOY_REF ?? DEFAULT_TREE_TAG).replace(/^refs\//, '');
@@ -115,11 +115,25 @@ function findTree() {
   } catch {
     // Absent, unreadable, or half-written — fall through to the guesses.
   }
+  // An explicit override, then the box's own record of where its tree lives.
+  // Both are statements of fact and outrank every guess below rather than merely
+  // sorting above them: scanning all candidates for a finished install first let
+  // a dev checkout in the current directory — complete, with a .env, but nothing
+  // to do with this box — shadow a recorded root whose setup hadn't finished.
+  const declared = process.env.FORGE_DEPLOY_DIR || recorded;
+  if (declared) {
+    const dir = resolve(declared);
+    if (isInstall(dir)) return { dir, configured: true };
+    if (isTree(dir)) return { dir, configured: false };
+    // Declared and not there: a question for the operator, not a cue to adopt
+    // some unrelated tree found lying around.
+    return null;
+  }
+
   const candidates = [];
   const seen = new Set();
   for (const candidate of [
     process.env.FORGE_DEPLOY_DIR,
-    recorded,
     process.cwd(),
     join(process.cwd(), 'forge-deploy'),
     '/opt/forge-deploy',
@@ -134,9 +148,6 @@ function findTree() {
   }
   const installed = candidates.find(isInstall);
   if (installed) return { dir: installed, configured: true };
-  // A recorded root that has vanished is a question for the operator, not a cue
-  // to adopt some unrelated tree found lying around and run setup in it.
-  if (recorded && !isTree(resolve(recorded))) return null;
   const tree = candidates.find(isTree);
   if (tree) return { dir: tree, configured: false };
   return null;

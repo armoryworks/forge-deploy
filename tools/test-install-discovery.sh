@@ -131,6 +131,14 @@ out=$(run "$SANDBOX/elsewhere" "FORGE_DEPLOY_DIR=$SANDBOX/done")
 check "opens the console, not setup"  "$out" "CONSOLE"
 refute "does not resume setup"        "$out" "Resuming setup"
 
+scenario "A dev checkout in the cwd cannot shadow the recorded root"
+make_unfinished_tree "$SANDBOX/real-install"
+make_tree "$SANDBOX/dev-checkout"
+printf '{"box":{"repoRoot":"%s/real-install"}}\n' "$SANDBOX" > "$SANDBOX/state/deploy-state.json"
+out=$(run "$SANDBOX/dev-checkout" "")
+check "uses the recorded root"        "$out" "$SANDBOX/real-install"
+refute "not the checkout it stood in" "$out" "root=$SANDBOX/dev-checkout"
+
 scenario "install-forge-deploy.sh wires the CLI to the tree it was run from"
 JQ="$(command -v jq || true)"; [[ -n "$JQ" ]] || JQ="${FORGE_TEST_JQ:-}"
 if [[ ! -x "$JQ" ]]; then

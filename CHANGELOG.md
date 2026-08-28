@@ -2,6 +2,12 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.5] - 2026-08-28
+
+### Fixed
+
+- **A dev checkout in the current directory could shadow the box's real install.** Discovery scanned every candidate for a *finished* install before considering unfinished trees, so precedence was decided by completeness rather than authority. Running the bare command from a forge-deploy source checkout — which has a `.env` and so reads as finished — opened the console on the checkout instead of the root recorded in `/etc/forge/deploy-state.json`, whose setup had not finished. The operator was then told "Forge has not been set up on this machine yet" about a directory that was never their install. `FORGE_DEPLOY_DIR` and the recorded root are statements of fact now: whichever is set is resolved on its own terms and outranks every guess, rather than merely sorting first among them. This also subsumes the vanished-root guard added in 0.8.4.
+
 ## [0.8.4] - 2026-08-28
 
 Found by running the previous release on a real machine. All three failures hit

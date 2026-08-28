@@ -22,7 +22,7 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-readonly FORGE_DEPLOY_VERSION="0.8.4"
+readonly FORGE_DEPLOY_VERSION="0.8.5"
 # The copy installed at /usr/local/bin has no tree around it, so the default
 # stays /opt/forge-deploy. A copy still sitting in <tree>/scripts belongs to
 # that tree — resolving to it is what lets an install live anywhere else.
