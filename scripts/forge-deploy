@@ -2311,6 +2311,27 @@ console_do_upgrade() {
 cmd_console() {
   console_head "Forge"
 
+  # ── helper programs ───────────────────────────────────────
+  # Checked before anything else, and handled separately from the problems
+  # below: every state read on this screen goes through jq, so without it the
+  # console cannot tell a configured box from an unconfigured one — it would
+  # read a working install as "never set up" and recommend the setup wizard.
+  # The repair path needs jq too, so there is nothing to offer but the install
+  # command. (Dropping preflight from this path is what removed the old
+  # guarantee that these exist.)
+  local dep
+  for dep in jq curl; do
+    if ! command -v "$dep" >/dev/null 2>&1; then
+      printf '\n  %sThis machine is missing a small program the Forge tooling needs: %s%s\n' \
+        "${C_YELLOW}" "$dep" "${C_RESET}"
+      printf '\n  Install it, then run this again:\n'
+      printf '      Ubuntu/Debian   sudo apt install -y %s\n' "$dep"
+      printf '      Fedora/RHEL     sudo dnf install -y %s\n' "$dep"
+      printf '      Alpine          sudo apk add %s\n\n' "$dep"
+      return 1
+    fi
+  done
+
   # ── the machine itself ────────────────────────────────────
   local problem; problem=$(console_machine_problem)
   if [[ -n "$problem" ]]; then

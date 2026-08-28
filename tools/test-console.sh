@@ -182,6 +182,15 @@ scenario() { printf '\n%s%s%s\n' "$C_Y" "$1" "$C_0"; reset_fake; }
 
 # ── scenarios ────────────────────────────────────────────────
 
+scenario "jq missing — cannot misread a configured box as unconfigured"
+rm -f "$SANDBOX/bin/jq"
+OUT=$(run_console "1")
+check "names the missing program" "$OUT" "missing a small program the Forge tooling needs: jq"
+check "gives an install command"  "$OUT" "sudo apt install -y jq"
+check_not "does not claim no role" "$OUT" "has not been told what it should run"
+check_not "does not offer setup"   "$OUT" "Finish setting this machine up"
+if command -v jq >/dev/null 2>&1; then ln -sf "$(command -v jq)" "$SANDBOX/bin/jq"; else ln -sf "$FORGE_TEST_JQ" "$SANDBOX/bin/jq"; fi
+
 scenario "Docker not running"
 touch "$SANDBOX/fake/docker_stopped"
 OUT=$(run_console "2")
