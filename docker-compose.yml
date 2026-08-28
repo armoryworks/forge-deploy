@@ -151,6 +151,10 @@ services:
       - Stamps__Environment=${STAMPS_ENVIRONMENT:-sandbox}
       - Seq__ServerUrl=${SEQ_SERVER_URL:-}
       - Seq__ApiKey=${SEQ_API_KEY:-}
+      # First-run gate: the salted verifier for this install's activation code.
+      # Set by the fleet provisioner per tenant; empty on a self-hosted install,
+      # which leaves the setup wizard open exactly as before.
+      - Setup__ActivationCodeHash=${SETUP_ACTIVATION_CODE_HASH:-}
       - APP_VERSION=${APP_VERSION:-dev}
       - GIT_COMMIT=${GIT_COMMIT:-}
     volumes:
