@@ -23,8 +23,9 @@ npx @armoryworks/forge-deploy
 Type it from anywhere — it finds the install on this machine rather than
 assuming a directory, and opens a guided console: what is installed, whether it
 is healthy, whether a newer release exists, and a short numbered menu —
-upgrade, repair, history, quit. If a newer installer is available it offers
-that first, applies it, and reopens itself. Every action runs the same gated path (backup → schema
+upgrade, repair, diagnose why it can't be reached, history, quit. If a newer
+installer is available it offers that first, applies it, and reopens itself.
+Every action that changes anything runs the same gated path (backup → schema
 reconcile → swap → health gate → automatic rollback), so nothing the menu can
 do skips a safeguard.
 
@@ -129,17 +130,19 @@ The full list is documented at the top of
 
 ## Something not working?
 
-One command triages the whole install — stack health, HTTPS, firewall,
-public IP, router/NAT problems, and whether the internet can actually
-reach you — and ends with plain-language instructions for whatever it
-finds:
+The same one command. Open the console and pick *"Forge runs here but people
+cannot reach it — find out why"*:
 
 ```bash
-npx @armoryworks/forge-deploy --doctor
+npx @armoryworks/forge-deploy
 ```
 
-It changes nothing, asks nothing, and is safe to re-run until every
-check reads `[OK]`.
+It triages the whole install — stack health, HTTPS, firewall, public IP,
+router/NAT problems, and whether the internet can actually reach you — and ends
+with plain-language instructions for whatever it finds. It changes nothing and
+is safe to re-run until every check reads `[OK]`.
+
+`npx @armoryworks/forge-deploy --doctor` still runs it directly, for scripts.
 
 ## Updating
 

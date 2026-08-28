@@ -22,7 +22,7 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-readonly FORGE_DEPLOY_VERSION="0.8.7"
+readonly FORGE_DEPLOY_VERSION="0.8.8"
 # The copy installed at /usr/local/bin has no tree around it, so the default
 # stays /opt/forge-deploy. A copy still sitting in <tree>/scripts belongs to
 # that tree — resolving to it is what lets an install live anywhere else.
@@ -2364,6 +2364,23 @@ console_do_upgrade() {
   return 1
 }
 
+# Reads only — no gate, no confirmation. Kept as a hand-off rather than a
+# reimplementation so there is one diagnosis to maintain, not two.
+console_run_doctor() {
+  console_head "Checking how this machine can be reached"
+  printf '  This only looks; it changes nothing.\n\n'
+  # `|| rc=$?`, not a bare call then `$?`: the doctor exits non-zero when it
+  # finds problems, and under `set -e` that would take the console down before
+  # the status could be read.
+  local rc=0
+  ( cd "$REPO_ROOT" && FORGE_DEPLOY_CALLER=1 bash ./doctor.sh ) || rc=$?
+  printf '\n'
+  if (( rc != 0 )); then
+    warn "The check found problems — the actions above are in the order to try them."
+  fi
+  return 0
+}
+
 cmd_console() {
   console_head "Forge"
 
@@ -2516,7 +2533,13 @@ cmd_console() {
     if [[ "$recommend" == upgrade ]]; then lbl="${lbl}${mark}"; fi
     opts+=("$lbl"); acts+=(upgrade)
   fi
-  opts+=("Check this system for problems"); acts+=(recover)
+  opts+=("Check this machine and fix what can be fixed"); acts+=(recover)
+  # The reachability doctor was only ever reachable as ./doctor.sh or
+  # setup.sh --doctor, which is one more thing to remember than the console is
+  # allowed to cost. It changes nothing, so it is always safe to offer.
+  if [[ -x "${REPO_ROOT}/doctor.sh" ]]; then
+    opts+=("Forge runs here but people cannot reach it — find out why"); acts+=(doctor)
+  fi
   opts+=("Show what has been deployed here before");  acts+=(logs)
   opts+=("Quit — change nothing");                    acts+=(quit)
 
@@ -2527,6 +2550,7 @@ cmd_console() {
     tool)    console_apply_tooling_update ;;
     upgrade) console_do_upgrade "$newest" ;;
     recover) RECOVERY_ENTRY="forge-deploy"; cmd_recover ;;
+    doctor)  console_run_doctor ;;
     logs)    cmd_logs ;;
     quit)    ok "Nothing was changed." ;;
   esac

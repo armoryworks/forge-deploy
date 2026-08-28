@@ -2,6 +2,17 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.8] - 2026-08-28
+
+### Added
+
+- **The reachability doctor is a console option.** `doctor.sh` — stack health, HTTPS, firewall, public IP, router/NAT, and whether the internet can actually reach the box — was only reachable as `./doctor.sh` or `setup.sh --doctor`, which is one more thing to remember than the one command is allowed to cost. It is now an entry in the guided menu: *"Forge runs here but people cannot reach it — find out why"*. It reads and reports, never changes anything, so it carries no confirmation gate. The console hands off to `doctor.sh` rather than reimplementing it, so there is one diagnosis to maintain. `--doctor` still works directly for scripts.
+
+### Fixed
+
+- The doctor exits non-zero when it finds problems, which under the console's `set -e` would have taken the console down before the status could be read. Captured with `|| rc=$?`.
+- `tools/test-console.sh` picked menu entries by hardcoded number, so adding one silently moved every option below it — the quit scenario started selecting something else. Scenarios name the option they want now (`menu_number`), which is what stopped this change from breaking three of them invisibly. Five new assertions cover the doctor entry and its non-zero exit (52 total).
+
 ## [0.8.7] - 2026-08-28
 
 The two structural pieces owed after six reactive releases: cover the sequence

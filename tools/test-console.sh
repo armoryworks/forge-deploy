@@ -115,6 +115,15 @@ chmod +x "$SANDBOX/bin/npx"
 # needs its own copy for any scenario that narrows CONSOLE_PATH to it.
 ln -sf "$(command -v bash)" "$SANDBOX/bin/bash"
 
+# The reachability doctor, stubbed: the console must offer and run it, and must
+# survive the non-zero exit it uses to signal "found problems".
+cat > "$SANDBOX/tree/doctor.sh" <<'DOC'
+#!/usr/bin/env bash
+echo "[doctor] checked reachability"
+exit 1
+DOC
+chmod +x "$SANDBOX/tree/doctor.sh"
+
 # Minimal tree the CLI insists on. docker-probe.sh is sourced before anything
 # else runs, so the stub tree needs the real one.
 mkdir -p "$SANDBOX/tree/scripts"
@@ -193,6 +202,13 @@ check_not() {
 }
 
 scenario() { printf '\n%s%s%s\n' "$C_Y" "$1" "$C_0"; reset_fake; }
+
+# menu_number <rendered-menu> <label fragment> -> the option's number.
+# Adding an entry shifts everything below it, so scenarios name the option they
+# want rather than counting lines that move under them.
+menu_number() {
+  sed -n "s/^[[:space:]]*\([0-9]\{1,\}\)[[:space:]].*$2.*/\1/p" <<<"$1" | head -1
+}
 
 # ── scenarios ────────────────────────────────────────────────
 
@@ -310,8 +326,26 @@ check "reopens the console"     "$OUT" "Reopening"
 check "second pass is clean"    "$OUT" "This machine is ready."
 check_not "does not loop"       "$OUT" "Updating the Forge tool\n  ────"
 
+scenario "The reachability doctor is reachable from the one command"
+OUT=$(run_console "")
+check "offers it in the menu"       "$OUT" "cannot reach it"
+
+scenario "Choosing it runs the doctor and survives its non-zero exit"
+# The entry's number moves with what else the box needs, so it is read off the
+# rendered menu rather than hardcoded.
+DOCTOR_CHOICE=$(sed -n 's/^[[:space:]]*\([0-9]\{1,\}\)[[:space:]].*cannot reach it.*/\1/p' <<<"$OUT" | head -1)
+if [[ -z "$DOCTOR_CHOICE" ]]; then
+  printf '  %s✗%s could not find the doctor entry in the menu\n' "$C_R" "$C_0"; FAIL=$((FAIL+1))
+else
+  OUT=$(run_console "$DOCTOR_CHOICE")
+  check "says it changes nothing"     "$OUT" "changes nothing"
+  check "runs the doctor"             "$OUT" "checked reachability"
+  check "reports what it found"       "$OUT" "found problems"
+  check_not "the console did not die" "$OUT" "unbound variable"
+fi
+
 scenario "Quit changes nothing"
-OUT=$(run_console "4")
+OUT=$(run_console "$(menu_number "$(run_console "")" "Quit")")
 check "says nothing changed" "$OUT" "Nothing was changed."
 
 printf '\n──────────────────────────────\n'
