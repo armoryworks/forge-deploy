@@ -20,10 +20,11 @@ One command, no arguments:
 npx @armoryworks/forge-deploy
 ```
 
-It opens a guided console: what is installed, whether it is healthy, whether a
-newer release exists, and a short numbered menu — upgrade, repair, history,
-quit. If a newer installer is available it offers that first, applies it, and
-reopens itself. Every action runs the same gated path (backup → schema
+Type it from anywhere — it finds the install on this machine rather than
+assuming a directory, and opens a guided console: what is installed, whether it
+is healthy, whether a newer release exists, and a short numbered menu —
+upgrade, repair, history, quit. If a newer installer is available it offers
+that first, applies it, and reopens itself. Every action runs the same gated path (backup → schema
 reconcile → swap → health gate → automatic rollback), so nothing the menu can
 do skips a safeguard.
 
@@ -112,6 +113,9 @@ script. The most useful flags:
 | `--source` | Developer mode — build images locally from sibling source repos |
 | `--doctor` | Diagnose instead of install: checks the stack, TLS, firewall, public IP, and probes reachability from the internet, then prints the exact next actions (including router port-forward rules) |
 | `--fetch-only` | (installer flag) Download the deploy tree but don't run setup |
+
+If your deploy tree lives somewhere unusual, `FORGE_DEPLOY_DIR=/path/to/tree`
+tells the bare command where to look.
 
 The full list is documented at the top of
 [`setup.sh`](https://github.com/armoryworks/forge-deploy/blob/main/setup.sh).

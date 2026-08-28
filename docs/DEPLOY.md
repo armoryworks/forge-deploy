@@ -436,6 +436,14 @@ rollback of the pin if anything fails.
 npx @armoryworks/forge-deploy        # or, if the tree is already there: forge-deploy
 ```
 
+It can be typed from any directory: the bare form locates this box's deploy tree
+(the root recorded in `/etc/forge/deploy-state.json`, then the current
+directory, `./forge-deploy`, `/opt/forge-deploy`, `/opt/forge`,
+`~/forge-deploy`) and opens on it in place. `FORGE_DEPLOY_DIR` names the tree
+when it lives somewhere else. If the box is configured but no tree can be
+found, the command refuses rather than starting a second install beside the
+first.
+
 That is the guided console. It checks the machine, reports what is installed and
 whether it is healthy, says whether a newer release exists, and offers a short
 numbered menu — update the tool, upgrade Forge, repair, show history, quit. Every

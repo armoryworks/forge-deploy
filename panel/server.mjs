@@ -67,7 +67,7 @@ function readBody(req) {
 function run(argv) {
   return spawn('bash', [CLI, ...argv], {
     cwd: REPO_ROOT,
-    env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1', TERM: 'dumb' },
+    env: { ...process.env, FORGE_DEPLOY_REPO: REPO_ROOT, FORCE_COLOR: '0', NO_COLOR: '1', TERM: 'dumb' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 }

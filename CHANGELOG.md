@@ -2,6 +2,24 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.1] - 2026-08-28
+
+### Fixed
+
+- **The bare command found the install only if you were standing next to it.** `npx @armoryworks/forge-deploy` with no arguments defaulted its target to `./forge-deploy`, so a client who typed it from `$HOME` on a box deployed at `/opt/forge-deploy` was handed the *first-install wizard* — the single worst thing this tool can do on a live machine. The no-argument form now locates the tree (recorded root, then the current directory, `./forge-deploy`, `/opt/forge-deploy`, `/opt/forge`, `~/forge-deploy`; `FORGE_DEPLOY_DIR` overrides) and opens the console on it **in place**, with no download — re-extracting over a root-owned install would have failed for exactly the operator the console exists for. If the state file says this box is configured but no tree can be found, it refuses and asks for the directory rather than installing a second Forge beside the first. Any argument at all — a directory, a subcommand, a setup flag — means the caller has already said what they want, and nothing is searched.
+
+- **The deploy CLI operated on `/opt/forge-deploy` no matter where it was run from.** `REPO_ROOT` fell back to that path whenever `FORGE_DEPLOY_REPO` was unset, so a copy invoked out of `<tree>/scripts` read another install's `.env`, compose files, and overrides. Combined with the bug above, the console could report on one tree while the bootstrapper had verified a different one. A copy that still sits in a deploy tree (`docker-compose.yml` and `.env.example` beside it) now resolves to that tree; the copy installed at `/usr/local/bin` has no tree around it and keeps the `/opt/forge-deploy` default. The bootstrapper and `panel/server.mjs` also name the root explicitly on every hand-off.
+
+### Added
+
+- **`.box.repoRoot` in the deploy state file** — written on setup, on every deploy, and opportunistically when the console opens, so the lookup above is exact rather than a search. An install predating the recording is healed the first time its console is opened.
+- **`tools/test-install-discovery.sh`** — 15 assertions over the bootstrapper's no-argument path, driven against stub trees with the network ref pointed at a tag that cannot exist, so every scenario also proves no fetch occurred.
+- `FORGE_STATE_DIR` is honoured by `bin/install.mjs` as well as the CLI, so the bootstrapper can be exercised outside `/etc`.
+
+### Note
+
+The `v0.8.0` tag was cut one commit before the jq/curl guard listed under 0.8.0 below; `v0.8.1` is the first tree that actually carries it.
+
 ## [0.8.0] - 2026-08-27
 
 ### Added

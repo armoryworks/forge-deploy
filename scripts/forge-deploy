@@ -22,7 +22,17 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-readonly FORGE_DEPLOY_VERSION="0.8.0"
+readonly FORGE_DEPLOY_VERSION="0.8.1"
+# The copy installed at /usr/local/bin has no tree around it, so the default
+# stays /opt/forge-deploy. A copy still sitting in <tree>/scripts belongs to
+# that tree — resolving to it is what lets an install live anywhere else.
+if [[ -z "${FORGE_DEPLOY_REPO:-}" ]]; then
+  _self_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)" || _self_root=""
+  if [[ -n "$_self_root" && -f "${_self_root}/docker-compose.yml" && -f "${_self_root}/.env.example" ]]; then
+    FORGE_DEPLOY_REPO="$_self_root"
+  fi
+  unset _self_root
+fi
 readonly REPO_ROOT="${FORGE_DEPLOY_REPO:-/opt/forge-deploy}"
 readonly STATE_DIR="${FORGE_STATE_DIR:-/etc/forge}"
 readonly STATE_FILE="${STATE_DIR}/deploy-state.json"
@@ -516,6 +526,21 @@ state_set() {
     "$STATE_FILE" > "$tmp"
   mv "$tmp" "$STATE_FILE"
   chmod 0640 "$STATE_FILE" 2>/dev/null || true
+  state_record_root
+}
+
+# The npm bootstrapper cannot find a tree that is not in a conventional
+# location, and a client running the bare command from $HOME must not be handed
+# a first-install wizard for a box that already runs Forge. Recording the root
+# here is what makes that lookup exact.
+state_record_root() {
+  local tmp current
+  [[ -f "$STATE_FILE" && -w "$STATE_FILE" ]] || return 0
+  current=$(jq -r '.box.repoRoot // ""' "$STATE_FILE" 2>/dev/null || echo "")
+  [[ "$current" == "$REPO_ROOT" ]] && return 0
+  tmp=$(mktemp)
+  jq --arg root "$REPO_ROOT" '.box = ((.box // {}) + {repoRoot: $root})' \
+    "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE" || rm -f "$tmp"
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -1526,7 +1551,9 @@ cmd_setup() {
 
   # 7. Record the role.
   local tmp; tmp=$(mktemp)
-  jq --arg r "$role" '.box = {role: $r, configuredAt: (now | todate)}' "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE" || rm -f "$tmp"
+  jq --arg r "$role" --arg root "$REPO_ROOT" \
+    '.box = ((.box // {}) + {role: $r, configuredAt: (now | todate), repoRoot: $root})' \
+    "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE" || rm -f "$tmp"
   printf '\n%s✓ Setup complete — this box is role "%s".%s\n' "${C_GREEN}${C_BOLD}" "$role" "${C_RESET}"
 }
 
@@ -2331,6 +2358,8 @@ cmd_console() {
       return 1
     fi
   done
+
+  state_record_root
 
   # ── the machine itself ────────────────────────────────────
   local problem; problem=$(console_machine_problem)
