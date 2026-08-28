@@ -6,10 +6,18 @@ All notable changes to forge-deploy and its packaged images. Format follows [Kee
 
 ### Fixed
 
-- **`test-console.sh`'s jq scenario only tested anything on a machine without jq.** The harness put the sandbox stubs ahead of the real `PATH` rather than replacing it, so removing `$SANDBOX/bin/jq` still left `/usr/bin/jq` findable — the assertion passed on a developer box (no jq installed) and failed the moment it ran in CI (jq installed). Scenarios can now narrow the console's `PATH` to the sandbox alone. `v0.8.1` is tagged on the commit where CI is red for this reason; `v0.8.2` is the first green tree.
+- **`test-console.sh`'s jq scenario only tested anything on a machine without jq.** The harness put the sandbox stubs ahead of the real `PATH` rather than replacing it, so removing `$SANDBOX/bin/jq` still left `/usr/bin/jq` findable — the assertion passed on a developer box (no jq installed) and failed the moment it ran in CI (jq installed). Scenarios can now narrow the console's `PATH` to the sandbox alone.
 - `tools/test-install-discovery.sh` pins `HOME` into the sandbox and skips its fresh-machine scenario on a box with a real install under `/opt`, so neither can turn a legitimate discovery hit into a failure.
 
-## [0.8.1] - 2026-08-28
+## [0.8.1] - 2026-08-28 — WITHDRAWN
+
+The `v0.8.1` tag was pushed before CI reported on its commit, and the release
+workflow — which had no test gate — published a GitHub release from a tree whose
+suite was red. Tag and release are both deleted, and the workflow is gated now.
+Nothing consumed it: `@armoryworks/forge-deploy@0.1.7` pinned `v0.8.0`
+throughout, and `0.1.8` pins `v0.8.2`. **Everything below shipped in `v0.8.2`**,
+and is kept under its own heading because the work, not the tag, is what these
+entries describe.
 
 ### Fixed
 
@@ -25,7 +33,7 @@ All notable changes to forge-deploy and its packaged images. Format follows [Kee
 
 ### Note
 
-The `v0.8.0` tag was cut one commit before the jq/curl guard listed under 0.8.0 below; `v0.8.1` is the first tree that actually carries it.
+The `v0.8.0` tag was cut one commit before the jq/curl guard listed under 0.8.0 below; `v0.8.2` is the first tree that actually carries it.
 
 ## [0.8.0] - 2026-08-27
 
