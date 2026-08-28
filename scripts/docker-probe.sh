@@ -1,3 +1,6 @@
+# shellcheck shell=bash
+# Not executable: this file is sourced, so it carries a shell directive
+# rather than a shebang.
 # Shared Docker reachability classifier. Sourced, never executed.
 #
 # This classification was written independently in setup.sh, refresh.sh, the
