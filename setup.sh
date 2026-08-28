@@ -662,13 +662,19 @@ if $PUBLIC && $PUBLIC_PREFLIGHT; then
 
     # ── 2. UFW firewall ──
     if command -v ufw &>/dev/null; then
-        if sudo ufw status 2>/dev/null | head -1 | grep -qi "Status: active"; then
+        # Captured once, then matched. Piping into `head -1` under pipefail
+        # made this worse than the usual version of the mistake: head exits
+        # after the first line, ufw dies of SIGPIPE, and the pipeline reports
+        # 141 — so an ACTIVE firewall read as inactive whenever ufw's output
+        # outran the pipe buffer, and setup silently skipped opening 80/443.
+        UFW_STATUS="$(sudo ufw status 2>/dev/null || true)"
+        if grep -qi "Status: active" <<<"$UFW_STATUS"; then
             UFW_NEEDS_80=true
             UFW_NEEDS_443=true
-            if sudo ufw status 2>/dev/null | grep -qE '^(80(/tcp)?|80\b)\s'; then
+            if grep -qE '^(80(/tcp)?|80\b)\s' <<<"$UFW_STATUS"; then
                 UFW_NEEDS_80=false
             fi
-            if sudo ufw status 2>/dev/null | grep -qE '^(443(/tcp)?|443\b)\s'; then
+            if grep -qE '^(443(/tcp)?|443\b)\s' <<<"$UFW_STATUS"; then
                 UFW_NEEDS_443=false
             fi
             if $UFW_NEEDS_80 || $UFW_NEEDS_443; then
@@ -899,7 +905,8 @@ for PORT in $CHECK_PORTS; do
             HOLDER=$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | awk 'NR==2 {print $1}')
         fi
     else
-        if ss -tlnp 2>/dev/null | grep -q ":${PORT} " 2>/dev/null; then
+        SS_LISTENERS="$(ss -tlnp 2>/dev/null || true)"
+        if grep -q ":${PORT} " <<<"$SS_LISTENERS"; then
             # Non-root users can't read other users' process names from ss —
             # the grep then matches nothing, and without the || true its
             # pipefail status would silently kill the whole script (set -e).

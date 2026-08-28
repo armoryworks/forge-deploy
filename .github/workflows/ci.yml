@@ -57,6 +57,12 @@ jobs:
           ./tools/test-console.sh
           ./tools/test-install-discovery.sh
 
+      - name: First-install end-to-end (containerised)
+        if: github.event_name == 'push'
+        env:
+          FORGE_DEPLOY_REF: ${{ startsWith(github.ref, 'refs/tags/') && format('tags/{0}', github.ref_name) || format('heads/{0}', github.ref_name) }}
+        run: ./tools/test-install-e2e.sh
+
       - name: Lint Dockerfiles (hadolint)
         uses: hadolint/hadolint-action@v3.1.0
         with:

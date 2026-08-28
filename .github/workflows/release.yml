@@ -28,7 +28,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +48,11 @@ jobs:
           sudo apt-get install -y -qq jq >/dev/null 2>&1 || true
           ./tools/test-console.sh
           ./tools/test-install-discovery.sh
+
+      - name: First-install end-to-end (containerised)
+        env:
+          FORGE_DEPLOY_REF: ${{ startsWith(github.ref, 'refs/tags/') && format('tags/{0}', github.ref_name) || 'heads/main' }}
+        run: ./tools/test-install-e2e.sh
 
   release:
     needs: verify

@@ -2,6 +2,21 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.7] - 2026-08-28
+
+The two structural pieces owed after six reactive releases: cover the sequence
+that kept breaking, and sweep the defect class that kept reappearing.
+
+### Added
+
+- **`tools/test-install-e2e.sh` — the first install, end to end, in a container.** Every bug that reached an operator today lived between `npx` and a manageable stack, and neither existing suite touched either end of that. Twenty assertions across six scenarios drive `bin/install.mjs` on a clean `node:20-bookworm-slim` with `docker` stubbed per scenario: Docker absent, socket denied, daemon stopped, the artefacts a *failed* install leaves behind, whether printed instructions name their directory, and whether the documented command resumes the tree it abandoned. It reproduces all six of today's failures against the code that had them, and passes against the code that doesn't. Wired into CI on push and into the release gate. Skips with a message where containers cannot run.
+
+### Fixed
+
+- **An active UFW firewall could be read as inactive, silently.** `sudo ufw status | head -1 | grep -qi "Status: active"` is the same pipefail trap as the Docker probe with an extra edge: `head -1` exits after one line, `ufw` dies of SIGPIPE, and the pipeline returns 141 — so whenever ufw's output outran the pipe buffer the match was discarded, setup concluded the firewall was inactive, and a `--public` install skipped opening 80/443 and came up unreachable with no warning. Captured once and matched three times now, which also stops shelling out to `sudo ufw` three times.
+- **The port check discarded its own result the same way.** `ss -tlnp | grep -q ":${PORT} "` — `ss` can exit non-zero while still printing listeners, taking the match down with it and missing a genuine port conflict. Captured before matching.
+- **`doctor.sh` reported a refused Docker socket as "the forge-ui container is not running".** `docker ps` returns nothing when the socket is denied, which is indistinguishable from a stopped stack, so the tool clients are told to run when something breaks sent them to restart a stack that was never the problem. It uses `docker_state` now and distinguishes absent, denied and stopped — the fifth and last caller to be folded in.
+
 ## [0.8.6] - 2026-08-28
 
 Reported from the same box: `forge-deploy --recover` announced "Docker is
