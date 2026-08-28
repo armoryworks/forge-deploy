@@ -52,7 +52,7 @@ const PKG_VERSION = JSON.parse(
   readFileSync(join(dirname(dirname(fileURLToPath(import.meta.url))), 'package.json'), 'utf8'),
 ).version;
 
-const DEFAULT_TREE_TAG = 'v0.8.3';
+const DEFAULT_TREE_TAG = 'v0.8.4';
 
 // Accept `v0.7.0`, `tags/v0.7.0`, or `heads/main` (development) alike.
 const rawRef = (process.env.FORGE_DEPLOY_REF ?? DEFAULT_TREE_TAG).replace(/^refs\//, '');
@@ -92,13 +92,22 @@ function makeExecutable(path) {
   }
 }
 
+// A tree is the deploy files; an install is a tree that setup.sh has been
+// through. The difference decides what the bare command does with it, and
+// conflating them told an operator whose setup had aborted that their tree
+// could not be found — with it sitting in the first place searched.
+function isTree(dir) {
+  return existsSync(join(dir, 'scripts', 'forge-deploy')) && existsSync(join(dir, 'setup.sh'));
+}
+
 function isInstall(dir) {
-  return existsSync(join(dir, '.env')) && existsSync(join(dir, 'scripts', 'forge-deploy'));
+  return isTree(dir) && existsSync(join(dir, '.env'));
 }
 
 // The deploy CLI records its own root in the state file; the rest of the list
-// is where a tree that predates that recording is likely to be.
-function findInstall() {
+// is where a tree that predates that recording is likely to be. A finished
+// install always wins over an unfinished one, so both passes run in full.
+function findTree() {
   let recorded = null;
   try {
     const root = JSON.parse(readFileSync(STATE_FILE, 'utf8'))?.box?.repoRoot;
@@ -106,6 +115,7 @@ function findInstall() {
   } catch {
     // Absent, unreadable, or half-written — fall through to the guesses.
   }
+  const candidates = [];
   const seen = new Set();
   for (const candidate of [
     process.env.FORGE_DEPLOY_DIR,
@@ -120,9 +130,21 @@ function findInstall() {
     const dir = resolve(candidate);
     if (seen.has(dir)) continue;
     seen.add(dir);
-    if (isInstall(dir)) return dir;
+    candidates.push(dir);
   }
+  const installed = candidates.find(isInstall);
+  if (installed) return { dir: installed, configured: true };
+  // A recorded root that has vanished is a question for the operator, not a cue
+  // to adopt some unrelated tree found lying around and run setup in it.
+  if (recorded && !isTree(resolve(recorded))) return null;
+  const tree = candidates.find(isTree);
+  if (tree) return { dir: tree, configured: false };
   return null;
+}
+
+function findInstall() {
+  const found = findTree();
+  return found?.configured ? found.dir : null;
 }
 
 // The CLI's own default root is /opt/forge-deploy; naming the tree it was
@@ -138,6 +160,42 @@ function runTree(dir, cliArgs) {
   process.exit(run.status ?? 1);
 }
 
+// FORGE_DEPLOY_CALLER tells setup.sh it was reached through the supported path,
+// suppressing the notice — and its blocking "press Enter" — that points the
+// operator at the very command they just ran.
+function setupOpts(dir) {
+  return {
+    cwd: dir,
+    stdio: 'inherit',
+    env: { ...process.env, FORGE_DEPLOY_CALLER: '1', FORGE_DEPLOY_REPO: dir },
+  };
+}
+
+// Installed before setup runs, not after: it creates /etc/forge and the state
+// file the CLI reads, and puts `forge-deploy` on PATH. Without it the documented
+// one command left a running stack with no way to manage it.
+function installCli(dir) {
+  const cliInstaller = join(dir, 'scripts', 'install-forge-deploy.sh');
+  if (!existsSync(cliInstaller)) return;
+  console.log('Installing the forge-deploy CLI (may prompt for sudo) ...');
+  const cli = spawnSync('bash', [cliInstaller], setupOpts(dir));
+  if (cli.status !== 0) {
+    console.error(
+      'forge-deploy: could not install the CLI — continuing with setup.\n' +
+      `  Add it afterwards with: sudo bash ${cliInstaller}`,
+    );
+  }
+}
+
+function runSetup(dir) {
+  const setupSh = join(dir, 'setup.sh');
+  if (!existsSync(setupSh)) fail(`${dir} has no setup.sh`);
+  makeExecutable(setupSh);
+  installCli(dir);
+  const run = spawnSync('bash', [setupSh, ...setupArgs], setupOpts(dir));
+  process.exit(run.status ?? 1);
+}
+
 // A client who runs the bare command from their home directory has to land on
 // the box's real install — being handed the first-install wizard for a machine
 // that already runs Forge is the worst thing this tool can do. Only the
@@ -145,7 +203,7 @@ function runTree(dir, cliArgs) {
 // flags all mean the caller has already said what they want.
 const bare = process.platform !== 'win32'
   && !subcommand && dirArg === undefined && setupArgs.length === 0 && !fetchOnly;
-const existing = bare ? findInstall() : null;
+const existing = bare ? findTree() : null;
 
 if (bare && !existing && existsSync(STATE_FILE)) {
   fail(
@@ -160,7 +218,15 @@ if (bare && !existing && existsSync(STATE_FILE)) {
 // Nothing to fetch: the tree is already on the box, and re-extracting over a
 // root-owned install would fail for exactly the operator the console is for.
 // The console offers the installer update itself when this package is behind.
-if (existing) runTree(existing, setupArgs);
+if (existing?.configured) runTree(existing.dir, setupArgs);
+
+// A tree whose setup never finished — aborted on a prerequisite, most often.
+// Resuming it in place is the one useful thing to do; offering a fresh install
+// somewhere else, or claiming the tree cannot be found, are both wrong.
+if (existing) {
+  console.log(`Resuming setup in ${existing.dir} ...`);
+  runSetup(existing.dir);
+}
 
 const targetDir = resolve(
   dirArg ?? (subcommand ? findInstall() ?? '/opt/forge-deploy' : 'forge-deploy'),
@@ -236,42 +302,13 @@ if (subcommand) {
 // is what makes `npx @armoryworks/forge-deploy` the one command to remember.
 if (process.platform !== 'win32' && isInstall(targetDir)) runTree(targetDir, setupArgs);
 
-let result;
 if (process.platform === 'win32') {
-  result = spawnSync(
+  const result = spawnSync(
     'powershell',
     ['-ExecutionPolicy', 'Bypass', '-File', 'setup.ps1', ...setupArgs],
     { cwd: targetDir, stdio: 'inherit' },
   );
-} else {
-  const setupSh = join(targetDir, 'setup.sh');
-  if (!existsSync(setupSh)) fail('setup.sh missing after extraction');
-  makeExecutable(setupSh);
-
-  // Install the CLI before setup runs, not after: it creates /etc/forge and the
-  // state file the CLI reads, and puts `forge-deploy` on PATH. Without this the
-  // documented one command left a running stack with no way to manage it — the
-  // operator had to find and run a shell script the notice named in passing.
-  const cliInstaller = join(targetDir, 'scripts', 'install-forge-deploy.sh');
-  if (existsSync(cliInstaller)) {
-    console.log('Installing the forge-deploy CLI (may prompt for sudo) ...');
-    const cli = spawnSync('bash', [cliInstaller], { cwd: targetDir, stdio: 'inherit' });
-    if (cli.status !== 0) {
-      console.error(
-        'forge-deploy: could not install the CLI — continuing with setup.\n' +
-        `  Add it afterwards with: sudo bash ${cliInstaller}`,
-      );
-    }
-  }
-
-  // FORGE_DEPLOY_CALLER tells setup.sh it was reached through the supported
-  // path, suppressing the notice (and its blocking "press Enter") that points
-  // the operator at the very command they just ran.
-  result = spawnSync('bash', [setupSh, ...setupArgs], {
-    cwd: targetDir,
-    stdio: 'inherit',
-    env: { ...process.env, FORGE_DEPLOY_CALLER: '1', FORGE_DEPLOY_REPO: targetDir },
-  });
+  process.exit(result.status ?? 1);
 }
 
-process.exit(result.status ?? 1);
+runSetup(targetDir);

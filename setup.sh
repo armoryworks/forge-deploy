@@ -320,7 +320,7 @@ bail() {
     done
     echo ""
     info "After installing, close this terminal and re-run:"
-    info "  ./setup.sh"
+    info "  cd ${FORGE_TREE} && ./setup.sh"
     echo ""
     exit 1
 }
@@ -778,7 +778,13 @@ fi
 
 # --- Docker daemon ---
 if ! docker info &>/dev/null 2>&1; then
-    if docker info 2>&1 | grep -qi "permission denied"; then
+    # Captured before matching, never piped: under `set -o pipefail` the status
+    # of `docker info 2>&1 | grep -q ...` is docker's failure, not grep's result,
+    # so this branch could never be taken and every permission problem produced
+    # "start the daemon" advice for a daemon that was already running. Same bug
+    # was fixed in the console's own probe in 0.8.0; this copy was missed.
+    docker_probe="$(docker info 2>&1 || true)"
+    if grep -qi "permission denied" <<<"$docker_probe"; then
         bail "Docker (permissions)" \
             "Docker is installed but your user cannot access it." \
             "" \
@@ -954,7 +960,7 @@ step "Verifying project files"
 if [[ ! -f "docker-compose.yml" ]]; then
     fail "docker-compose.yml not found."
     info "Run this script from the forge-deploy repo root:"
-    info "  cd forge-deploy && ./setup.sh"
+    info "  cd ${FORGE_TREE} && ./setup.sh"
     exit 1
 fi
 
@@ -1008,7 +1014,7 @@ if $SOURCE_BUILD; then
                 step "  Cloning ${sib}"
                 if ! git -C "$PARENT_DIR" clone "https://github.com/armoryworks/${sib}.git"; then
                     fail "git clone failed for ${sib}"
-                    info "Clone manually then re-run ./setup.sh --source"
+                    info "Clone manually then re-run: cd ${FORGE_TREE} && ./setup.sh --source"
                     exit 1
                 fi
                 ok "Cloned ${sib}"
@@ -1021,7 +1027,7 @@ if $SOURCE_BUILD; then
             done
             echo ""
             info "Or skip --source and use the default GHCR-pull path:"
-            info "  ./setup.sh"
+            info "  cd ${FORGE_TREE} && ./setup.sh"
             exit 1
         fi
     fi
@@ -1462,7 +1468,7 @@ else
         info "Common causes:"
         info "  - No network connectivity to ghcr.io"
         info "  - Image tag doesn't exist (check SERVER_IMAGE_TAG / UI_IMAGE_TAG in .env)"
-        info "  - Multi-arch image missing your architecture (try ./setup.sh --source)"
+        info "  - Multi-arch image missing your architecture (try: cd ${FORGE_TREE} && ./setup.sh --source)"
         exit 1
     fi
     ok "Images pulled from GHCR (${PULL_SVCS[*]})"

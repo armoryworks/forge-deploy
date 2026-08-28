@@ -2,6 +2,23 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.4] - 2026-08-28
+
+Found by running the previous release on a real machine. All three failures hit
+the same operator in the same sitting.
+
+### Fixed
+
+- **A Docker permission problem was reported as "the daemon is not running".** `setup.sh` matched with `docker info 2>&1 | grep -qi "permission denied"`, and under `set -o pipefail` a pipeline's status is the *last non-zero* one — docker's failure, not grep's result. The permission branch was unreachable, so every operator whose user wasn't in the `docker` group was told to `sudo systemctl start docker` for a daemon that was already running, and following that advice changed nothing. This is the identical bug fixed in the console's own probe in 0.8.0; this second copy was missed. Output is captured before matching now.
+
+- **Instructions still named `./setup.sh` with no directory.** 0.8.3 fixed the closing banner and the notices but missed six more printed paths — including the one that matters most, the "After installing, close this terminal and re-run" that follows a failed prerequisite. The operator's shell is never in the tree when the bootstrapper ran setup, so `./setup.sh` reliably answered `No such file or directory`. Every printed instruction now carries `cd ${FORGE_TREE} &&`, in `setup.sh` and in `install-forge-deploy.sh`'s next steps.
+
+- **An aborted setup could not be resumed by the documented command.** Discovery treated `.env` as the mark of a deploy tree, so a tree whose `setup.sh` had bailed on a prerequisite — the exact state a failed first run leaves behind — was invisible. With `/etc/forge` already written by the CLI installer, the bare command then reported "this machine has Forge configured, but its deploy tree is not in any of the places I looked" while the tree sat in the first place it looked. A *tree* (`setup.sh` + `scripts/forge-deploy`) is now distinguished from an *install* (a tree plus `.env`): a finished install opens the console, an unfinished one resumes setup in place. A finished install always wins over an unfinished one, and a recorded root that has vanished still refuses rather than adopting some unrelated tree found nearby.
+
+### Added
+
+- Eight assertions covering the resume path, install-beats-unfinished-tree, and the vanished-root refusal (26 total in `tools/test-install-discovery.sh`). The harness now distinguishes the two states the way the code does, and its `/opt` guard skips on any real deploy tree rather than only a configured one.
+
 ## [0.8.3] - 2026-08-28
 
 ### Fixed

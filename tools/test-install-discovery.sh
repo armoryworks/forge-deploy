@@ -34,10 +34,19 @@ refute() {
 
 # A tree the installer must accept as an install and hand off to, without ever
 # reaching for the network. The stub CLI reports the root it was given.
+# A tree is scripts/forge-deploy + setup.sh; .env is what makes it an install.
 make_tree() {
   local dir="$1"
-  mkdir -p "$dir/scripts"
+  make_unfinished_tree "$dir"
   touch "$dir/.env"
+}
+
+# The state a client is left in when setup aborts on a prerequisite.
+make_unfinished_tree() {
+  local dir="$1"
+  mkdir -p "$dir/scripts"
+  printf '#!/usr/bin/env bash\necho "SETUP root=$FORGE_DEPLOY_REPO caller=$FORGE_DEPLOY_CALLER"\n' > "$dir/setup.sh"
+  chmod +x "$dir/setup.sh"
   printf 'echo "CONSOLE root=${FORGE_DEPLOY_REPO:-unset} cwd=$PWD args=$*"\n' > "$dir/scripts/forge-deploy"
   printf 'exit 0\n' > "$dir/scripts/ensure-deps.sh"
   chmod +x "$dir/scripts/forge-deploy" "$dir/scripts/ensure-deps.sh"
@@ -91,8 +100,8 @@ scenario "Genuinely fresh machine still installs"
 rm -f "$SANDBOX/state/deploy-state.json"
 # The search reaches /opt on any box; a real install there is a legitimate hit
 # and would make this scenario meaningless rather than failing honestly.
-if [[ -f /opt/forge-deploy/.env || -f /opt/forge/.env ]]; then
-  printf '  %s—%s skipped: this machine has a real install under /opt\n' "$C_Y" "$C_0"
+if [[ -f /opt/forge-deploy/setup.sh || -f /opt/forge/setup.sh ]]; then
+  printf '  %s—%s skipped: this machine has a real deploy tree under /opt\n' "$C_Y" "$C_0"
 else
   out=$(run "$SANDBOX/home" "")
   check "goes to the download path"  "$out" "Fetching forge-deploy"
@@ -105,6 +114,22 @@ printf '{"box":{"role":"all","repoRoot":"%s"}}\n' "$SANDBOX/recorded2" > "$SANDB
 out=$(run "$SANDBOX/elsewhere" "" --fetch-only)
 refute "does not silently redirect"  "$out" "root=$SANDBOX/recorded2"
 check "honours the explicit flag"    "$out" "Fetching forge-deploy"
+
+scenario "Setup that never finished resumes in place"
+make_unfinished_tree "$SANDBOX/aborted"
+printf '{"box":{"repoRoot":"%s/aborted"}}\n' "$SANDBOX" > "$SANDBOX/state/deploy-state.json"
+out=$(run "$SANDBOX/elsewhere" "")
+check "says it is resuming"           "$out" "Resuming setup in $SANDBOX/aborted"
+check "runs that tree's setup"        "$out" "SETUP root=$SANDBOX/aborted"
+check "and marks itself the caller"   "$out" "caller=1"
+refute "never claims it is missing"   "$out" "is not in any of the"
+refute "no second install elsewhere"  "$out" "Fetching forge-deploy"
+
+scenario "A finished install still wins over an unfinished tree"
+make_tree "$SANDBOX/done"
+out=$(run "$SANDBOX/elsewhere" "FORGE_DEPLOY_DIR=$SANDBOX/done")
+check "opens the console, not setup"  "$out" "CONSOLE"
+refute "does not resume setup"        "$out" "Resuming setup"
 
 scenario "install-forge-deploy.sh wires the CLI to the tree it was run from"
 JQ="$(command -v jq || true)"; [[ -n "$JQ" ]] || JQ="${FORGE_TEST_JQ:-}"
@@ -136,6 +161,7 @@ else
   # And the bootstrapper finds it from an unrelated directory via that record.
   # Stubbed from here on: the real console wants docker and a terminal.
   touch "$TREE/.env"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$TREE/setup.sh"
   printf '#!/usr/bin/env bash\necho "CONSOLE root=$FORGE_DEPLOY_REPO"\n' > "$TREE/scripts/forge-deploy"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$TREE/scripts/ensure-deps.sh"
   chmod +x "$TREE/scripts/forge-deploy" "$TREE/scripts/ensure-deps.sh"

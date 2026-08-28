@@ -238,7 +238,8 @@ step "Install complete"
 cat <<EOF
 
 Next steps:
-  1. Make sure ${REPO_ROOT}/.env exists (run ./setup.sh once if not).
+  1. Make sure ${REPO_ROOT}/.env exists
+     (if not: cd ${REPO_ROOT} && ./setup.sh)
   2. Confirm ${REPO_ROOT}/docker-compose.prod.yml is present.
   3. Try:    forge-deploy --help
              forge-deploy --list
