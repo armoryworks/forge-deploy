@@ -898,45 +898,58 @@ elif ! $IS_COHOST && ( $PUBLIC || [[ "$MODE_FLAG" == "standalone" ]] || $IS_HEAD
     # Standalone (explicit or headless-detected) without SSL: UI binds 80
     CHECK_PORTS="80 443 5000 5432 9000 9001"
 fi
+RELOCATED_VARS=()
+
+# Who actually holds a port. `ss` is asked last because it is the only one that
+# needs root to name another user's process — which is why this used to report
+# "can't identify the process" and wave through conflicts it could have named.
+# Docker publishes through docker-proxy and knows every mapping without root.
+# Echoes: "container <name> <project>" | "process <name>" | ""
+# Move a published port out of the way and record it, so the operator never has
+# to. These mappings exist for host access only — the stack talks to itself over
+# the compose network — so relocating one changes nothing but the address you
+# reach it on from this machine.
+relocate_port() {
+    local var="$1" old="$2" holder="$3" new
+    new=$(next_free_port "$(( old + 1 ))")
+    if [[ "$new" == "$old" ]]; then
+        fail "Port $old is taken by ${holder} and no free port was found near it."
+        return 1
+    fi
+    set_env "$var" "$new"
+    RELOCATED_VARS+=("$var:$old")
+    warn "Port ${old} is held by ${holder}; using ${new} for ${var} instead."
+    return 0
+}
+
 for PORT in $CHECK_PORTS; do
-    HOLDER=""
-    if $IS_MAC; then
-        if lsof -iTCP:"$PORT" -sTCP:LISTEN &>/dev/null 2>&1; then
-            HOLDER=$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | awk 'NR==2 {print $1}')
-        fi
+    HOLDER_RAW="$(port_holder "$PORT")"
+    [[ -n "$HOLDER_RAW" ]] || continue
+    read -r HKIND HNAME HPROJ <<<"$HOLDER_RAW"
+    if [[ "$HKIND" == container ]]; then
+        HOLDER_DESC="container '${HNAME}' (project ${HPROJ})"
     else
-        SS_LISTENERS="$(ss -tlnp 2>/dev/null || true)"
-        if grep -q ":${PORT} " <<<"$SS_LISTENERS"; then
-            # Non-root users can't read other users' process names from ss —
-            # the grep then matches nothing, and without the || true its
-            # pipefail status would silently kill the whole script (set -e).
-            HOLDER=$(ss -tlnpH "sport = :${PORT}" 2>/dev/null | grep -oP '"\K[^"]+' | head -1 || true)
-            [[ -z "$HOLDER" ]] && HOLDER="unidentified"
-        fi
+        HOLDER_DESC="$HNAME"
     fi
-    if [[ -n "$HOLDER" ]]; then
-        # docker-proxy on the standalone HTTP/HTTPS ports usually means a
-        # previous run of this stack — non-fatal.
-        if [[ "$HOLDER" == "docker-proxy" ]]; then
-            ok "Port $PORT: held by docker-proxy (likely a previous forge run)"
-        elif [[ "$HOLDER" == "unidentified" ]]; then
-            # Almost always the previous forge run's root-owned docker-proxy,
-            # invisible to a non-root ss. Warn but don't block — if it's a
-            # genuine foreign process, compose up fails with a clear
-            # "port is already allocated" and --recover names the culprit.
-            warn "Port $PORT: in use, but this user can't identify the process (needs sudo)."
-            warn "If it's the previous Forge run, compose will rebind it; continuing."
-        else
-            CONFLICTS="$CONFLICTS $PORT(${HOLDER})"
-        fi
-    fi
+    case "$PORT" in
+        # Reported here, resolved once .env exists — which is after this stage
+        # on a fresh install, so nothing may be written yet.
+        4200|5000|5432|9000|9001)
+            warn "Port $PORT is held by ${HOLDER_DESC} — setup will move Forge's to a free one." ;;
+        *)
+            CONFLICTS="$CONFLICTS ${PORT}(${HOLDER_DESC})" ;;
+    esac
 done
 if [[ -n "$CONFLICTS" ]]; then
     warn "Ports already in use:$CONFLICTS"
-    warn "You can change ports in .env after setup, or run with --public to"
-    warn "have setup offer to stop common system services (nginx, apache)."
-    read -rp "    Continue anyway? (y/N) " yn
-    [[ "$yn" =~ ^[Yy]$ ]] || exit 1
+    warn "These are the addresses people browse to, so setup will not move them."
+    warn "Run with --public to have setup stop common web servers (nginx, apache)."
+    if [[ -t 0 ]]; then
+        read -rp "    Continue anyway? (y/N) " yn
+        [[ "$yn" =~ ^[Yy]$ ]] || exit 1
+    else
+        exit 1
+    fi
 else
     ok "Required ports are available ($CHECK_PORTS)"
 fi
@@ -1111,6 +1124,19 @@ else
     else
         sed -i "s|^SEED_DEMO_DATA=true|SEED_DEMO_DATA=false|" .env
         ok "Clean install — no demo data (setup wizard creates your admin account)"
+    fi
+
+    # docker-compose.yml pins container_name, so container names are global
+    # while the compose project name defaults to the install DIRECTORY — and
+    # volumes are project-prefixed. The combination means moving or reinstalling
+    # the tree elsewhere silently starts against empty volumes while colliding
+    # on the container names it cannot have. Pinning the project makes the data
+    # follow the install rather than the path.
+    #
+    # Fresh .env only: adding this to an existing install would repoint every
+    # volume from <dir>_pgdata to forge_pgdata and read as total data loss.
+    if ! grep -qE '^COMPOSE_PROJECT_NAME=' .env; then
+        printf 'COMPOSE_PROJECT_NAME=forge\n' >> .env
     fi
 
     ok "Created .env with random JWT key"
@@ -1491,6 +1517,89 @@ fi
 # out (e.g. forge-ui on a box converted to API-only).
 CORE_UP=()
 mapfile -t CORE_UP < <(keep_unscoped forge forge-storage forge-backup forge-api forge-ui)
+# Everything below runs with .env in place, so it can settle conflicts instead
+# of describing them. An operator should never be asked to pick a port or to
+# work out which compose project owns a container name.
+COMPOSE_PROJECT="$(grep -E '^COMPOSE_PROJECT_NAME=' .env 2>/dev/null | cut -d= -f2- | tr -d '[:space:]')"
+: "${COMPOSE_PROJECT:=$(basename "$FORGE_TREE")}"
+
+for spec in "UI_PORT 4200" "API_PORT 5000" "POSTGRES_PORT 5432" \
+            "MINIO_API_PORT 9000" "MINIO_CONSOLE_PORT 9001"; do
+    read -r pvar pdefault <<<"$spec"
+    pcur="$(grep -E "^${pvar}=" .env 2>/dev/null | cut -d= -f2- | tr -d '[:space:]')"
+    : "${pcur:=$pdefault}"
+    holder_raw="$(port_holder "$pcur")"
+    [[ -n "$holder_raw" ]] || continue
+    read -r hkind hname hproj <<<"$holder_raw"
+    # Ours: compose replaces it on the way up, which is the one case where
+    # "it will be rebound" is actually true.
+    [[ "$hkind" == container && "$hproj" == "$COMPOSE_PROJECT" ]] && continue
+    if [[ "$hkind" == container ]]; then
+        relocate_port "$pvar" "$pcur" "container '${hname}'" || true
+    else
+        relocate_port "$pvar" "$pcur" "$hname" || true
+    fi
+done
+
+# docker-compose.yml sets container_name, so these names are global. A container
+# of the same name owned by ANOTHER compose project is a hard conflict: compose
+# can neither rename nor adopt it, and the failure it produces is raw daemon
+# output about a name already in use. Say what it is, and what the ways out are.
+THIS_PROJECT="$COMPOSE_PROJECT"
+CLASHING=()
+OTHER_PROJECT=""
+OTHER_DIR=""
+for c in forge forge-api forge-ui forge-storage forge-backup; do
+    owner=$(docker inspect "$c" \
+        --format '{{index .Config.Labels "com.docker.compose.project"}}' 2>/dev/null || true)
+    if [[ -n "$owner" && "$owner" != "$THIS_PROJECT" ]]; then
+        CLASHING+=("$c")
+        OTHER_PROJECT="$owner"
+        # `docker compose -p <name> down` has no compose file to work from; the
+        # label records where that stack actually lives, so name it.
+        [[ -n "$OTHER_DIR" ]] || OTHER_DIR=$(docker inspect "$c" \
+            --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null || true)
+    fi
+done
+if (( ${#CLASHING[@]} > 0 )); then
+    # Adopt rather than refuse. The other stack is the same product with the
+    # same fixed container names; its volumes hold the data an operator would
+    # otherwise silently lose by coming up against empty ones. Taking its
+    # project name means this tree reuses those volumes, so the install moves
+    # and the data stays put.
+    warn "Another Forge stack owns these container names: ${CLASHING[*]}"
+    warn "It is compose project '${OTHER_PROJECT}'${OTHER_DIR:+, installed in ${OTHER_DIR}}."
+    step "Adopting it so this install keeps its data"
+
+    if [[ -n "$OTHER_DIR" && -f "${OTHER_DIR}/docker-compose.yml" ]]; then
+        ( cd "$OTHER_DIR" && docker compose down --remove-orphans ) >/dev/null 2>&1 \
+            || docker rm -f "${CLASHING[@]}" >/dev/null 2>&1 || true
+    else
+        docker rm -f "${CLASHING[@]}" >/dev/null 2>&1 || true
+    fi
+    ok "Stopped the old containers (its volumes were not touched)"
+
+    if [[ "$OTHER_PROJECT" != "$COMPOSE_PROJECT" ]]; then
+        set_env COMPOSE_PROJECT_NAME "$OTHER_PROJECT"
+        COMPOSE_PROJECT="$OTHER_PROJECT"
+        export COMPOSE_PROJECT_NAME="$OTHER_PROJECT"
+        ok "This install is now project '${OTHER_PROJECT}' — its database and files carry over"
+    fi
+
+    # Whatever it was holding is free now, so a port moved aside a moment ago on
+    # its account can come home.
+    # Only what this run moved on the old stack's account. A port the operator
+    # chose themselves is not ours to change back.
+    for moved in "${RELOCATED_VARS[@]:-}"; do
+        [[ -n "$moved" ]] || continue
+        pvar="${moved%%:*}"; pwas="${moved##*:}"
+        if [[ -z "$(port_holder "$pwas")" ]]; then
+            set_env "$pvar" "$pwas"
+            ok "Port ${pwas} is free again — ${pvar} restored"
+        fi
+    done
+fi
+
 step "Starting core services: ${CORE_UP[*]:-<none>}"
 if (( ${#CORE_UP[@]} > 0 )); then
     docker compose up -d --remove-orphans "${CORE_UP[@]}"

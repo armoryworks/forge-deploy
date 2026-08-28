@@ -166,6 +166,32 @@ got=$(set -euo pipefail; . "$REPO_ROOT/scripts/docker-probe.sh"
       docker_state)
 check "survives set -o pipefail"       "$got" "denied"
 
+scenario "Port ownership is read from Docker, not guessed"
+( . "$REPO_ROOT/scripts/docker-probe.sh"
+  pb="$SANDBOX/portbin"; mkdir -p "$pb"
+  # Two containers: ours publishing a RANGE (docker collapses 9000 and 9001
+  # into one mapping) and a stranger with no compose project at all.
+  cat > "$pb/docker" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1" == ps ]]; then
+  printf 'forge-storage	0.0.0.0:9000-9001->9000-9001/tcp	forge
+'
+  printf 'nom-sync-pg	127.0.0.1:5432->5432/tcp	
+'
+  exit 0
+fi
+exit 0
+STUB
+  chmod +x "$pb/docker"; export PATH="$pb:$PATH"
+
+  check "a range covers its low port"  "$(port_holder 9000)" "container forge-storage forge"
+  check "a range covers its high port" "$(port_holder 9001)" "container forge-storage forge"
+  check "a stranger is named"          "$(port_holder 5432)" "container nom-sync-pg"
+  check "an unpublished port is free"  "[$(port_holder 7777)]" "[]"
+  check "next free port skips taken"   "$(next_free_port 9000)" "9002"
+  printf '%d %d\n' "$PASS" "$FAIL" > "$SANDBOX/port-tally" ) || true
+read -r PASS FAIL < "$SANDBOX/port-tally"
+
 scenario "install-forge-deploy.sh wires the CLI to the tree it was run from"
 JQ="$(command -v jq || true)"; [[ -n "$JQ" ]] || JQ="${FORGE_TEST_JQ:-}"
 if [[ ! -x "$JQ" ]]; then

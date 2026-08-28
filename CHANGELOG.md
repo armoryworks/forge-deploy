@@ -2,6 +2,26 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.9] - 2026-08-28
+
+Field install, second machine. Setup got as far as starting containers and then
+handed the operator three problems to solve by hand. It now solves all three
+itself.
+
+### Fixed
+
+- **A second install came up against an empty database, silently.** `docker-compose.yml` pins `container_name`, so container names are global — but the compose *project* name defaults to the install directory, and volumes are project-prefixed. Installing to a different path therefore produced `<dir>_pgdata` instead of the existing `forge_pgdata`: a working Forge with none of the data in it. Fresh installs now pin `COMPOSE_PROJECT_NAME=forge`, so the data follows the install rather than the path. Written on `.env` **creation only** — adding it to an existing install would repoint every volume and read as total data loss.
+
+- **A previous install's containers stopped setup dead.** Names being global, a stack from another project owning `forge`/`forge-api`/… is a conflict compose can neither rename nor adopt; the operator got raw daemon output about a name already in use. Setup now detects it, stops that stack (its volumes untouched), and **adopts its project name**, so this tree reuses its database and files. The install moves; the data stays put.
+
+- **The port check named nothing and reassured wrongly.** It asked only `ss`, which cannot read another user's process names without root, then said *"if it's the previous Forge run, compose will rebind it; continuing"* — false whenever the holder belongs to anything else, which is exactly when it mattered. It asks Docker first now (which names every published mapping without root, and handles the collapsed `9000-9001->9000-9001` range form that made our own MinIO look like a stranger), and only claims a rebind when the holder really is this project. A conflict on `POSTGRES_PORT`, `API_PORT`, `UI_PORT` or the MinIO ports is moved to the next free port and recorded in `.env`; those mappings exist for host access only, so nothing but the address changes. If adopting a previous stack frees a port this run had moved on its account, it is moved back — but only ports this run moved, never one the operator chose.
+
+  80 and 443 are deliberately excluded: they are the addresses people are told to browse to, and moving them silently would change the URL out from under the operator. `--public` still offers to stop nginx/apache.
+
+### Changed
+
+- `port_holder` and `next_free_port` live in `scripts/docker-probe.sh` beside `docker_state`, so port ownership is one implementation with direct tests (five assertions, including the range form) rather than logic buried in `setup.sh` where it could not be exercised.
+
 ## [0.8.8] - 2026-08-28
 
 ### Added
