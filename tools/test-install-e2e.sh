@@ -19,9 +19,18 @@ REF="${FORGE_DEPLOY_REF:-heads/main}"
 
 PASS=0; FAIL=0
 C_G=$'\033[32m'; C_R=$'\033[31m'; C_Y=$'\033[33m'; C_0=$'\033[0m'
-scenario() { printf '\n%s%s%s\n' "$C_Y" "$1" "$C_0"; }
+scenario() { printf '\n%s%s%s\n' "$C_Y" "$1" "$C_0"; DUMPED=""; }
+# A failing container assertion is useless without the container's own output;
+# the first version of this harness hid why five checks were passing over
+# nothing. Dumped once per scenario, not once per check.
+dump_once() {
+  [[ -n "${DUMPED:-}" ]] && return 0
+  DUMPED=1
+  printf '      %s--- container output ---%s\n' "$C_Y" "$C_0"
+  printf '%s\n' "$2" | tail -25 | sed 's/^/      | /'
+}
 check()  { if [[ "$2" == *"$3"* ]]; then printf '  %s✓%s %s\n' "$C_G" "$C_0" "$1"; PASS=$((PASS+1));
-           else printf '  %s✗%s %s\n      wanted: %s\n' "$C_R" "$C_0" "$1" "$3"; FAIL=$((FAIL+1)); fi; }
+           else printf '  %s✗%s %s\n      wanted: %s\n' "$C_R" "$C_0" "$1" "$3"; FAIL=$((FAIL+1)); dump_once "$1" "$2"; fi; }
 refute() { if [[ "$2" != *"$3"* ]]; then printf '  %s✓%s %s\n' "$C_G" "$C_0" "$1"; PASS=$((PASS+1));
            else printf '  %s✗%s %s\n      unwanted: %s\n' "$C_R" "$C_0" "$1" "$3"; FAIL=$((FAIL+1)); fi; }
 
@@ -81,7 +90,15 @@ chmod +x /usr/local/bin/docker
 PRE
 }
 
-INSTALL='sudo -u op env HOME=/home/op node /repo/bin/install.mjs /home/op/forge-deploy </dev/null'
+AS_OP='sudo -u op env HOME=/home/op FORGE_DEPLOY_REF="$FORGE_DEPLOY_REF"'
+INSTALL="$AS_OP node /repo/bin/install.mjs /home/op/forge-deploy </dev/null"
+
+# Proves the ref actually crossed into the installer. Without this the suite can
+# pass against a released tree while the branch under test is broken.
+scenario "The tree under test is the one being installed"
+out=$(in_container "$(preamble)
+$INSTALL")
+check "fetches the ref it was given"    "$out" "Fetching forge-deploy (${REF})"
 
 scenario "First install on a box where Docker is not installed"
 out=$(in_container "$(preamble)
@@ -132,7 +149,7 @@ out=$(in_container "$(preamble)
 $(docker_stub 'echo "Cannot connect to the Docker daemon." >&2; exit 1')
 $INSTALL
 echo '--- SECOND RUN, FROM HOME ---'
-cd /home/op && sudo -u op env HOME=/home/op node /repo/bin/install.mjs </dev/null")
+cd /home/op && $AS_OP node /repo/bin/install.mjs </dev/null")
 check "resumes in place"                "$out" "Resuming setup in /home/op/forge-deploy"
 refute "does not install a second copy" "$out" "into /home/op/forge-deploy/forge-deploy"
 refute "never says it cannot find it"   "$out" "is not in any of the"

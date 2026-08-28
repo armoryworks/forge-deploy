@@ -9,7 +9,9 @@ that kept breaking, and sweep the defect class that kept reappearing.
 
 ### Added
 
-- **`tools/test-install-e2e.sh` — the first install, end to end, in a container.** Every bug that reached an operator today lived between `npx` and a manageable stack, and neither existing suite touched either end of that. Twenty assertions across six scenarios drive `bin/install.mjs` on a clean `node:20-bookworm-slim` with `docker` stubbed per scenario: Docker absent, socket denied, daemon stopped, the artefacts a *failed* install leaves behind, whether printed instructions name their directory, and whether the documented command resumes the tree it abandoned. It reproduces all six of today's failures against the code that had them, and passes against the code that doesn't. Wired into CI on push and into the release gate. Skips with a message where containers cannot run.
+- **`tools/test-install-e2e.sh` — the first install, end to end, in a container.** Every bug that reached an operator today lived between `npx` and a manageable stack, and neither existing suite touched either end of that. Twenty assertions across six scenarios drive `bin/install.mjs` on a clean `node:20-bookworm-slim` with `docker` stubbed per scenario: Docker absent, socket denied, daemon stopped, the artefacts a *failed* install leaves behind, whether printed instructions name their directory, and whether the documented command resumes the tree it abandoned. Wired into CI on push and into the release gate; skips with a message where containers cannot run.
+
+  Verified by negative control rather than by assertion: pointed at `tags/v0.8.3` it fails on exactly the six things 0.8.4 fixed, and passes against `heads/main`. That control was earned — the first version of the suite reported 20/20 while testing nothing of the sort. `sudo -u op` resets the environment, so `FORGE_DEPLOY_REF` never reached the installer and it fell back to its pinned `DEFAULT_TREE_TAG`, quietly exercising the last *release* instead of the branch. It now forwards the ref explicitly and asserts that the ref it was given is the one fetched.
 
 ### Fixed
 
