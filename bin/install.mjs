@@ -47,7 +47,7 @@ const PKG_VERSION = JSON.parse(
   readFileSync(join(dirname(dirname(fileURLToPath(import.meta.url))), 'package.json'), 'utf8'),
 ).version;
 
-const DEFAULT_TREE_TAG = 'v0.8.1';
+const DEFAULT_TREE_TAG = 'v0.8.2';
 
 // Accept `v0.7.0`, `tags/v0.7.0`, or `heads/main` (development) alike.
 const rawRef = (process.env.FORGE_DEPLOY_REF ?? DEFAULT_TREE_TAG).replace(/^refs\//, '');

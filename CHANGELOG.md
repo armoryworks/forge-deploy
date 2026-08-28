@@ -2,6 +2,13 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.2] - 2026-08-28
+
+### Fixed
+
+- **`test-console.sh`'s jq scenario only tested anything on a machine without jq.** The harness put the sandbox stubs ahead of the real `PATH` rather than replacing it, so removing `$SANDBOX/bin/jq` still left `/usr/bin/jq` findable — the assertion passed on a developer box (no jq installed) and failed the moment it ran in CI (jq installed). Scenarios can now narrow the console's `PATH` to the sandbox alone. `v0.8.1` is tagged on the commit where CI is red for this reason; `v0.8.2` is the first green tree.
+- `tools/test-install-discovery.sh` pins `HOME` into the sandbox and skips its fresh-machine scenario on a box with a real install under `/opt`, so neither can turn a legitimate discovery hit into a failure.
+
 ## [0.8.1] - 2026-08-28
 
 ### Fixed

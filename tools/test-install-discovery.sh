@@ -43,7 +43,8 @@ make_tree() {
 # run <cwd> <extra-env-assignments> [installer args...]
 run() {
   local cwd="$1" extra="$2"; shift 2
-  ( cd "$cwd" && env FORGE_STATE_DIR="$SANDBOX/state" FORGE_DEPLOY_REF="tags/v0.0.0-never" \
+  ( cd "$cwd" && env HOME="$SANDBOX/home" FORGE_STATE_DIR="$SANDBOX/state" \
+      FORGE_DEPLOY_REF="tags/v0.0.0-never" \
       ${extra:+"$extra"} node "$INSTALLER" "$@" 2>&1 )
 }
 
@@ -83,9 +84,15 @@ refute "no first-install wizard"     "$out" "Fetching forge-deploy"
 
 scenario "Genuinely fresh machine still installs"
 rm -f "$SANDBOX/state/deploy-state.json"
-out=$(run "$SANDBOX/home" "")
-check "goes to the download path"    "$out" "Fetching forge-deploy"
-check "into ./forge-deploy"          "$out" "$SANDBOX/home/forge-deploy"
+# The search reaches /opt on any box; a real install there is a legitimate hit
+# and would make this scenario meaningless rather than failing honestly.
+if [[ -f /opt/forge-deploy/.env || -f /opt/forge/.env ]]; then
+  printf '  %s—%s skipped: this machine has a real install under /opt\n' "$C_Y" "$C_0"
+else
+  out=$(run "$SANDBOX/home" "")
+  check "goes to the download path"  "$out" "Fetching forge-deploy"
+  check "into ./forge-deploy"        "$out" "$SANDBOX/home/forge-deploy"
+fi
 
 scenario "An argument means the caller has already chosen"
 make_tree "$SANDBOX/recorded2"

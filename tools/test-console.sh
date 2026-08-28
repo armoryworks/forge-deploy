@@ -111,6 +111,10 @@ exit 0
 NPX
 chmod +x "$SANDBOX/bin/npx"
 
+# `env PATH=... bash` resolves bash through the PATH it just set, so the sandbox
+# needs its own copy for any scenario that narrows CONSOLE_PATH to it.
+ln -sf "$(command -v bash)" "$SANDBOX/bin/bash"
+
 # Minimal tree the CLI insists on.
 : > "$SANDBOX/tree/docker-compose.yml"
 : > "$SANDBOX/tree/docker-compose.prod.yml"
@@ -130,9 +134,14 @@ ENV
   printf '0.1.6\n' > "$SANDBOX/tree/.installer-version"
 }
 
+# CONSOLE_PATH lets a scenario narrow the console's PATH to the sandbox alone.
+# Appending the real PATH is right for every other case, but it means a stub
+# removed from $SANDBOX/bin is still found in /usr/bin — which is exactly how
+# the jq scenario below passed on a developer box without jq and failed in CI
+# with it.
 _console_env() {
   printf 'PATH=%s FAKE_DIR=%s FORGE_DEPLOY_REPO=%s FORGE_STATE_DIR=%s FORGE_LOG_FILE=%s NO_COLOR=1' \
-    "$SANDBOX/bin:$PATH" "$SANDBOX/fake" "$SANDBOX/tree" "$SANDBOX/state" "$SANDBOX/state/forge-deploy.log"
+    "${CONSOLE_PATH:-$SANDBOX/bin:$PATH}" "$SANDBOX/fake" "$SANDBOX/tree" "$SANDBOX/state" "$SANDBOX/state/forge-deploy.log"
 }
 
 # Runs the console on a real pty, because the menu only appears on a terminal.
@@ -184,7 +193,9 @@ scenario() { printf '\n%s%s%s\n' "$C_Y" "$1" "$C_0"; reset_fake; }
 
 scenario "jq missing — cannot misread a configured box as unconfigured"
 rm -f "$SANDBOX/bin/jq"
-OUT=$(run_console "1")
+# The sandbox alone: reaching the helper check needs no external program, and
+# anything inherited from the system PATH would put jq back.
+OUT=$(CONSOLE_PATH="$SANDBOX/bin" run_console "1")
 check "names the missing program" "$OUT" "missing a small program the Forge tooling needs: jq"
 check "gives an install command"  "$OUT" "sudo apt install -y jq"
 check_not "does not claim no role" "$OUT" "has not been told what it should run"
