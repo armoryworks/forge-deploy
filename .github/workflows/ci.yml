@@ -50,11 +50,12 @@ jobs:
           ignore_paths: |
             tools/rfid-relay
 
-      - name: Console behaviour tests
+      - name: Console + installer behaviour tests
         run: |
           set -e
           sudo apt-get install -y -qq jq >/dev/null 2>&1 || true
           ./tools/test-console.sh
+          ./tools/test-install-discovery.sh
 
       - name: Lint Dockerfiles (hadolint)
         uses: hadolint/hadolint-action@v3.1.0
