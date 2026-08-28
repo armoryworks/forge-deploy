@@ -85,6 +85,14 @@
 
 set -euo pipefail
 
+# Every instruction this script prints used to be relative to the caller's cwd.
+# Run through the npm bootstrapper that is never the operator's shell — it hands
+# setup.sh the tree as its own cwd and the operator's shell stays where they
+# launched npx, so "docker compose logs -f forge-api" and friends failed on
+# paste. Printed commands name this directory instead of assuming it.
+FORGE_TREE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly FORGE_TREE
+
 SOURCE_BUILD=false
 SEED_DEMO=false
 FRESH=false
@@ -254,7 +262,7 @@ if [[ "$DEPLOY_TARGET" == "public" && -f .env ]]; then
             if [[ -t 0 ]]; then
                 read -r -p "  Type PUBLIC to continue, anything else to abort: " EXPOSURE_ANSWER
                 if [[ "$EXPOSURE_ANSWER" != "PUBLIC" ]]; then
-                    echo "  Aborted — install left untouched. (Updates: ./refresh.sh or docker compose pull && up -d)"
+                    echo "  Aborted — install left untouched. (Updates: cd ${FORGE_TREE} && ./refresh.sh)"
                     exit 1
                 fi
             else
@@ -274,14 +282,18 @@ fi
 # FORGE_DEPLOY_CALLER=1 when it invokes us; direct runs get a pointer.
 if [[ -z "${FORGE_DEPLOY_CALLER:-}" ]]; then
     echo ""
-    echo "NOTE: the supported way to install and manage Forge is the forge-deploy CLI:"
+    echo "NOTE: the supported way to install and manage Forge is one command:"
     echo ""
-    echo "        sudo bash scripts/install-forge-deploy.sh"
-    echo "        forge-deploy"
+    echo "        npx @armoryworks/forge-deploy"
     echo ""
-    echo "      It runs this bootstrapper for you and adds recovery, version pinning,"
-    echo "      and health-gated upgrades. Running setup.sh directly still works"
-    echo "      (dev workstations, --source builds) but is no longer the documented path."
+    echo "      It fetches a pinned tree, installs the forge-deploy CLI, and runs"
+    echo "      this bootstrapper for you — then every later run opens the guided"
+    echo "      console. Running setup.sh directly still works (dev workstations,"
+    echo "      --source builds) but is no longer the documented path."
+    echo ""
+    echo "      To add the CLI to this existing tree without reinstalling:"
+    echo ""
+    echo "        sudo bash ${FORGE_TREE}/scripts/install-forge-deploy.sh"
     if [[ -t 0 ]]; then
         read -rp "      Press Enter to continue anyway (Ctrl-C to abort)... " _ || true
     fi
@@ -1677,6 +1689,10 @@ fi
 
 echo "  ─── Useful Commands ───"
 echo ""
+echo "  These run from the deploy directory — get there first:"
+echo ""
+echo "      cd ${FORGE_TREE}"
+echo ""
 echo "  View logs:    docker compose logs -f forge-api"
 echo "  Stop all:     docker compose stop"
 echo "  Start all:    docker compose up -d"
@@ -1685,7 +1701,7 @@ echo "  Update:       ./refresh.sh        (rebuild from source — dev loop)"
 else
 echo "  Update:       docker compose pull && docker compose up -d"
 echo "                or install forge-deploy for healthcheck-gated rollouts"
-echo "                  (see scripts/install-forge-deploy.sh)"
+echo "                  (sudo bash ${FORGE_TREE}/scripts/install-forge-deploy.sh)"
 fi
 echo "  DB shell:     docker compose exec forge psql -U postgres -d forge"
 echo ""

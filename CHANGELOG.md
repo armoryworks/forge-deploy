@@ -2,6 +2,22 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.3] - 2026-08-28
+
+### Fixed
+
+- **The documented command told you it wasn't the documented command, then blocked.** `setup.sh` prints a notice pointing at the forge-deploy CLI whenever `FORGE_DEPLOY_CALLER` is unset — and the npm bootstrapper never set it. So `npx @armoryworks/forge-deploy`, the headline command in the README, printed "the supported way to install and manage Forge is the forge-deploy CLI" and then stopped on `read -rp "Press Enter to continue anyway"`. The bootstrapper sets the flag now; the notice is rewritten to point at `npx @armoryworks/forge-deploy` for anyone who really did run `setup.sh` by hand.
+
+- **The npm path never installed the CLI, so `forge-deploy` didn't exist afterwards.** `bin/install.mjs` fetched the tree and ran `setup.sh`; nothing ever ran `scripts/install-forge-deploy.sh`, which is what creates `/etc/forge/deploy-state.json`, the log file, and `/usr/local/bin/forge-deploy`. A first install therefore ended with a running stack, no state file, and no command to manage it — the operator had to notice a shell script mentioned in passing. It now runs before `setup.sh`, so the state file exists while setup runs. A failure there warns and continues rather than aborting an otherwise good install.
+
+- **The installed `forge-deploy` was hard-wired to `/opt/forge-deploy`.** `install-forge-deploy.sh` did `install -m 0755 <tree>/scripts/forge-deploy /usr/local/bin/forge-deploy` — a blind copy recording nothing about its origin, and a copy on `PATH` has no tree around it to resolve from. An install at `~/forge-deploy` or `/srv/forge` got a CLI silently reading a different install's `.env`, compose files and overrides. It now installs a two-line wrapper that exports `FORGE_DEPLOY_REPO=<the tree it was run from>` and execs that tree's CLI — which also means refreshing the tree updates the command, instead of leaving a frozen copy to drift from what it manages. The tree root is written to `.box.repoRoot` at the same time, so the bare command can find it immediately.
+
+- **Every command `setup.sh` printed assumed you were standing in the deploy tree.** It had no `SCRIPT_DIR` and no `cd` — ten printed instructions (`docker compose logs -f forge-api`, `./refresh.sh`, `scripts/install-forge-deploy.sh`, …) were relative to the caller's cwd. Run through the bootstrapper that is never the operator's shell: setup.sh gets the tree as its cwd while the operator's shell stays where they typed `npx`, so every one of them failed on paste. `FORGE_TREE` is resolved from `BASH_SOURCE` now; the "Useful Commands" block leads with the `cd` that makes the rest true, and the notices name absolute paths.
+
+### Added
+
+- **`FORGE_INSTALL_PREFIX` relocates everything `install-forge-deploy.sh` writes** (`/usr/local/bin`, `/etc/forge`, `/var/log`) and suppresses the sudo auto-elevation, which is what makes that script exercisable without root — and so testable at all. Six new assertions in `tools/test-install-discovery.sh` cover the wrapper, the recorded root, that the installed command resolves to its own tree, and that the bare command then discovers it (21 total). They skip with a message when jq is unavailable.
+
 ## [0.8.2] - 2026-08-28
 
 ### Fixed

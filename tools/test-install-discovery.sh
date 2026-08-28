@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# test-install-discovery.sh — the npm bootstrapper's no-argument path.
+# test-install-discovery.sh — how an install is wired up and found again.
 #
 # The promise is that `npx @armoryworks/forge-deploy`, typed from anywhere on a
 # box that already runs Forge, opens the console on THAT install. The failure it
 # guards against is the expensive one: a client standing in $HOME being handed
-# the first-install wizard for a machine that is already deployed. None of this
-# may touch the network, so every assertion below also proves no fetch happened.
+# the first-install wizard for a machine that is already deployed. None of the
+# discovery scenarios may touch the network, so each also proves no fetch
+# happened.
+#
+# The final section covers the other half: install-forge-deploy.sh, which puts
+# `forge-deploy` on PATH. FORGE_INSTALL_PREFIX relocates everything it writes,
+# so it runs here without root.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -100,6 +105,43 @@ printf '{"box":{"role":"all","repoRoot":"%s"}}\n' "$SANDBOX/recorded2" > "$SANDB
 out=$(run "$SANDBOX/elsewhere" "" --fetch-only)
 refute "does not silently redirect"  "$out" "root=$SANDBOX/recorded2"
 check "honours the explicit flag"    "$out" "Fetching forge-deploy"
+
+scenario "install-forge-deploy.sh wires the CLI to the tree it was run from"
+JQ="$(command -v jq || true)"; [[ -n "$JQ" ]] || JQ="${FORGE_TEST_JQ:-}"
+if [[ ! -x "$JQ" ]]; then
+  printf '  %s—%s skipped: needs jq (install it, or set FORGE_TEST_JQ)\n' "$C_Y" "$C_0"
+else
+  TREE="$SANDBOX/srv-forge"; PREFIX="$SANDBOX/prefix"; JQ_PATH="$(dirname "$JQ"):$PATH"
+  mkdir -p "$TREE"
+  cp -r "$REPO_ROOT/scripts" "$REPO_ROOT/docker-compose.yml" "$REPO_ROOT/.env.example" "$TREE/"
+  PATH="$JQ_PATH" FORGE_INSTALL_PREFIX="$PREFIX" FORGE_DEPLOY_USER="$(id -un)" \
+    timeout 60 bash "$TREE/scripts/install-forge-deploy.sh" >/dev/null 2>&1
+
+  wrapper=$(cat "$PREFIX/usr/local/bin/forge-deploy" 2>&1)
+  check "names this tree, not /opt"    "$wrapper" "$TREE"
+  refute "no hard-wired default root"  "$wrapper" "{FORGE_DEPLOY_REPO:-/opt/forge-deploy}"
+
+  recorded=$("$JQ" -r '.box.repoRoot // ""' "$PREFIX/etc/forge/deploy-state.json" 2>&1)
+  check "records the root for lookup"  "$recorded" "$TREE"
+
+  # The proof that matters: the command on PATH resolves to its own tree. As a
+  # blind copy it read /opt/forge-deploy whatever tree it came from. Which of
+  # the incomplete-tree checks fires first doesn't matter — the path it names
+  # is the assertion.
+  acted=$(PATH="$JQ_PATH" FORGE_STATE_DIR="$PREFIX/etc/forge" \
+    timeout 60 "$PREFIX/usr/local/bin/forge-deploy" --status 2>&1)
+  check "acts on its own tree"         "$acted" "$TREE/"
+  refute "does not reach for /opt"     "$acted" "/opt/forge-deploy"
+
+  # And the bootstrapper finds it from an unrelated directory via that record.
+  # Stubbed from here on: the real console wants docker and a terminal.
+  touch "$TREE/.env"
+  printf '#!/usr/bin/env bash\necho "CONSOLE root=$FORGE_DEPLOY_REPO"\n' > "$TREE/scripts/forge-deploy"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$TREE/scripts/ensure-deps.sh"
+  chmod +x "$TREE/scripts/forge-deploy" "$TREE/scripts/ensure-deps.sh"
+  out=$(run "$SANDBOX/elsewhere" "FORGE_STATE_DIR=$PREFIX/etc/forge")
+  check "bare command discovers it"    "$out" "CONSOLE root=$TREE"
+fi
 
 printf '\n──────────────────────────────\n'
 if (( FAIL == 0 )); then printf '  %s%d passed%s   %s0 failed%s\n\n' "$C_G" "$PASS" "$C_0" "$C_G" "$C_0"

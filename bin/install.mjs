@@ -28,6 +28,11 @@
 // an existing install. FORGE_DEPLOY_DIR names the tree when it is somewhere
 // else entirely.
 //
+// On a first install it also runs scripts/install-forge-deploy.sh before
+// setup.sh, so /etc/forge and the `forge-deploy` command exist when setup
+// finishes. Without it the documented one command left a running stack the
+// operator had no CLI to manage.
+//
 // Otherwise the first argument not starting with "-" is the target directory
 // (default ./forge-deploy). Every argument starting with "-" is passed
 // through to setup.sh untouched (--source, --lan, --public, --ssl, ...),
@@ -47,7 +52,7 @@ const PKG_VERSION = JSON.parse(
   readFileSync(join(dirname(dirname(fileURLToPath(import.meta.url))), 'package.json'), 'utf8'),
 ).version;
 
-const DEFAULT_TREE_TAG = 'v0.8.2';
+const DEFAULT_TREE_TAG = 'v0.8.3';
 
 // Accept `v0.7.0`, `tags/v0.7.0`, or `heads/main` (development) alike.
 const rawRef = (process.env.FORGE_DEPLOY_REF ?? DEFAULT_TREE_TAG).replace(/^refs\//, '');
@@ -241,8 +246,32 @@ if (process.platform === 'win32') {
 } else {
   const setupSh = join(targetDir, 'setup.sh');
   if (!existsSync(setupSh)) fail('setup.sh missing after extraction');
-  chmodSync(setupSh, 0o755);
-  result = spawnSync('bash', [setupSh, ...setupArgs], { cwd: targetDir, stdio: 'inherit' });
+  makeExecutable(setupSh);
+
+  // Install the CLI before setup runs, not after: it creates /etc/forge and the
+  // state file the CLI reads, and puts `forge-deploy` on PATH. Without this the
+  // documented one command left a running stack with no way to manage it — the
+  // operator had to find and run a shell script the notice named in passing.
+  const cliInstaller = join(targetDir, 'scripts', 'install-forge-deploy.sh');
+  if (existsSync(cliInstaller)) {
+    console.log('Installing the forge-deploy CLI (may prompt for sudo) ...');
+    const cli = spawnSync('bash', [cliInstaller], { cwd: targetDir, stdio: 'inherit' });
+    if (cli.status !== 0) {
+      console.error(
+        'forge-deploy: could not install the CLI — continuing with setup.\n' +
+        `  Add it afterwards with: sudo bash ${cliInstaller}`,
+      );
+    }
+  }
+
+  // FORGE_DEPLOY_CALLER tells setup.sh it was reached through the supported
+  // path, suppressing the notice (and its blocking "press Enter") that points
+  // the operator at the very command they just ran.
+  result = spawnSync('bash', [setupSh, ...setupArgs], {
+    cwd: targetDir,
+    stdio: 'inherit',
+    env: { ...process.env, FORGE_DEPLOY_CALLER: '1', FORGE_DEPLOY_REPO: targetDir },
+  });
 }
 
 process.exit(result.status ?? 1);

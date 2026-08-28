@@ -35,9 +35,16 @@ npx @armoryworks/forge-deploy
 ```
 
 On a machine with no Forge on it, the same command fetches the deploy tree into
-`./forge-deploy` and runs interactive setup. It auto-detects platform,
-architecture, and available resources, and asks how you want to deploy (this
-machine only / LAN / public).
+`./forge-deploy`, installs the `forge-deploy` CLI (one sudo prompt), and runs
+interactive setup. It auto-detects platform, architecture, and available
+resources, and asks how you want to deploy (this machine only / LAN / public).
+
+Afterwards there are two commands, and the second one is optional:
+
+```bash
+npx @armoryworks/forge-deploy    # from anywhere — finds the install, opens the console
+forge-deploy                     # the same console, once the CLI is on your PATH
+```
 
 Common variants:
 
