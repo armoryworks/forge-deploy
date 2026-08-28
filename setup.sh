@@ -93,6 +93,9 @@ set -euo pipefail
 FORGE_TREE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly FORGE_TREE
 
+# shellcheck source=scripts/docker-probe.sh
+. "${FORGE_TREE}/scripts/docker-probe.sh"
+
 SOURCE_BUILD=false
 SEED_DEMO=false
 FRESH=false
@@ -777,14 +780,8 @@ if ! command -v docker &>/dev/null; then
 fi
 
 # --- Docker daemon ---
-if ! docker info &>/dev/null 2>&1; then
-    # Captured before matching, never piped: under `set -o pipefail` the status
-    # of `docker info 2>&1 | grep -q ...` is docker's failure, not grep's result,
-    # so this branch could never be taken and every permission problem produced
-    # "start the daemon" advice for a daemon that was already running. Same bug
-    # was fixed in the console's own probe in 0.8.0; this copy was missed.
-    docker_probe="$(docker info 2>&1 || true)"
-    if grep -qi "permission denied" <<<"$docker_probe"; then
+if [[ "$(docker_state)" != "ok" ]]; then
+    if [[ "$(docker_state)" == "denied" ]]; then
         bail "Docker (permissions)" \
             "Docker is installed but your user cannot access it." \
             "" \

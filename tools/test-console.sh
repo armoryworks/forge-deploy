@@ -115,6 +115,11 @@ chmod +x "$SANDBOX/bin/npx"
 # needs its own copy for any scenario that narrows CONSOLE_PATH to it.
 ln -sf "$(command -v bash)" "$SANDBOX/bin/bash"
 
+# Minimal tree the CLI insists on. docker-probe.sh is sourced before anything
+# else runs, so the stub tree needs the real one.
+mkdir -p "$SANDBOX/tree/scripts"
+cp "$REPO_ROOT/scripts/docker-probe.sh" "$SANDBOX/tree/scripts/"
+
 # Minimal tree the CLI insists on.
 : > "$SANDBOX/tree/docker-compose.yml"
 : > "$SANDBOX/tree/docker-compose.prod.yml"

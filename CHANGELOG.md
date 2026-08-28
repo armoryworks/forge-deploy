@@ -2,6 +2,20 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.6] - 2026-08-28
+
+Reported from the same box: `forge-deploy --recover` announced "Docker is
+installed but not running — will start it" three times, each followed by a sudo
+password failure, on a machine whose daemon was running the whole time.
+
+### Fixed
+
+- **The Docker probe was written four times and three copies were wrong.** `docker info 2>&1 | grep -qi 'permission denied'` under `set -o pipefail` reports docker's exit status, not grep's result, so the permission branch was unreachable and an inaccessible socket was always reported as a stopped daemon. 0.8.0 fixed the console's copy and 0.8.4 fixed setup.sh's; the recovery doctor's and refresh.sh's remained (refresh.sh never had a permission branch at all). Classification now lives in **`scripts/docker-probe.sh`** — `docker_state` → `ok | absent | denied | stopped` — sourced by all four callers, which keep their own wording. Four assertions drive it directly, including one under `set -o pipefail`, so the trap cannot be reintroduced per-copy.
+
+- **The recovery doctor retried a fix that had already failed.** Each of its three passes re-ran `sudo systemctl start docker`, and with no controlling terminal sudo cannot prompt — so one refusal became three identical walls of error. A heal that fails is recorded and skipped on later passes, and a pass that fixes nothing ends the loop instead of running out its count. `sudo` for the daemon start is now checked for usability first: without a terminal and without cached credentials it says so and hands over the command, rather than failing opaquely.
+
+- `scripts/forge-deploy` resolves the shared probe without calling `dirname`, since it is sourced before `PATH` can be trusted, and reports an incomplete deploy tree in a sentence if the file is missing.
+
 ## [0.8.5] - 2026-08-28
 
 ### Fixed

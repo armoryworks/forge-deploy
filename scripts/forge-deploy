@@ -22,7 +22,7 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-readonly FORGE_DEPLOY_VERSION="0.8.5"
+readonly FORGE_DEPLOY_VERSION="0.8.6"
 # The copy installed at /usr/local/bin has no tree around it, so the default
 # stays /opt/forge-deploy. A copy still sitting in <tree>/scripts belongs to
 # that tree — resolving to it is what lets an install live anywhere else.
@@ -34,6 +34,22 @@ if [[ -z "${FORGE_DEPLOY_REPO:-}" ]]; then
   unset _self_root
 fi
 readonly REPO_ROOT="${FORGE_DEPLOY_REPO:-/opt/forge-deploy}"
+# Docker reachability lives in one file so the pipefail trap that misread a
+# permission error as a stopped daemon cannot be reintroduced per-copy. Resolved
+# without calling out to dirname: this must work before PATH is trusted.
+_probe_dir="${BASH_SOURCE[0]%/*}"
+[[ "$_probe_dir" == "${BASH_SOURCE[0]}" ]] && _probe_dir="."
+# shellcheck source=scripts/docker-probe.sh
+if [[ -r "${REPO_ROOT}/scripts/docker-probe.sh" ]]; then
+  . "${REPO_ROOT}/scripts/docker-probe.sh"
+elif [[ -r "${_probe_dir}/docker-probe.sh" ]]; then
+  . "${_probe_dir}/docker-probe.sh"
+else
+  printf 'forge-deploy: scripts/docker-probe.sh is missing from %s — the deploy tree is incomplete.\n' \
+    "$REPO_ROOT" >&2
+  exit 1
+fi
+unset _probe_dir
 readonly STATE_DIR="${FORGE_STATE_DIR:-/etc/forge}"
 readonly STATE_FILE="${STATE_DIR}/deploy-state.json"
 readonly LOG_FILE="${FORGE_LOG_FILE:-/var/log/forge-deploy.log}"
@@ -1693,8 +1709,8 @@ bootstrap_scan() {
   ok "docker installed"
 
   # 2. Daemon running (and reachable by THIS user)?
-  if ! docker info >/dev/null 2>&1; then
-    if docker info 2>&1 | grep -qi "permission denied"; then
+  if [[ "$(docker_state)" != "ok" ]]; then
+    if [[ "$(docker_state)" == "denied" ]]; then
       scan_fatal "Docker is running but your user can't talk to it. Add yourself to the docker group — sudo usermod -aG docker \$USER — then log out and back in (or run 'newgrp docker'), and run: forge-deploy --recover"
     elif [[ "$(uname -s)" == "Linux" ]] && command -v systemctl >/dev/null 2>&1; then
       scan_heal daemon "Docker is installed but not running — will start it"
@@ -1862,7 +1878,13 @@ heal_up() {
 
 apply_heal() {
   case "$1" in
-    daemon)     sudo systemctl start docker ;;
+    daemon)
+      if [[ ! -t 0 ]] && ! sudo -n true 2>/dev/null; then
+        err "Starting Docker needs a password, and this is not an interactive terminal."
+        printf '      Run this yourself, then try again:  sudo systemctl start docker\n'
+        return 1
+      fi
+      sudo systemctl start docker ;;
     install)    sudo bash "${REPO_ROOT}/scripts/install-forge-deploy.sh" ;;
     bootstrap)  run_bootstrap ;;
     chown)      sudo chown -R "$(id -un):$(id -gn)" "$REPO_ROOT" ;;
@@ -1912,6 +1934,7 @@ cmd_recover() {
   require_cmd jq; require_cmd curl
   printf '\n%s== forge-deploy recovery ==%s\n' "${C_BOLD}${C_CYAN}" "${C_RESET}"
   local pass=1 asked=false
+  local -a HEAL_FAILED=()
   while (( pass <= 3 )); do
     bootstrap_scan
     trace "Doctor scan pass ${pass}: fixable=[${SCAN_HEAL[*]:-none}], needs-user=${#SCAN_FATAL[@]}."
@@ -1932,15 +1955,26 @@ cmd_recover() {
         q|Q) return 0 ;;
       esac
     fi
-    local h healed_all=true
+    local h healed_all=true progressed=false
     for h in "${SCAN_HEAL[@]}"; do
+      # A fix that failed on an earlier pass fails the same way on this one;
+      # re-running it only reprints the error, which is what turned one refused
+      # sudo into three identical walls of it.
+      if [[ " ${HEAL_FAILED[*]:-} " == *" $h "* ]]; then
+        trace "Auto-fix '$h': skipped, already failed this run."
+        healed_all=false
+        continue
+      fi
       if apply_heal "$h"; then
         trace "Auto-fix '$h': succeeded."
+        progressed=true
       else
         trace "Auto-fix '$h': FAILED."
+        HEAL_FAILED+=("$h")
         healed_all=false
       fi
     done
+    $progressed || break
     if ! $healed_all && (( pass == 3 )); then break; fi
     (( pass++ ))
   done
@@ -2164,13 +2198,8 @@ console_machine_problem() {
   if ! command -v docker >/dev/null 2>&1; then
     printf 'Docker is not installed on this machine.'; return
   fi
-  if ! docker info >/dev/null 2>&1; then
-    # Capture before matching: under `set -o pipefail` a `docker info | grep`
-    # pipeline reports the failure of docker, not the result of grep, so the
-    # permission case would always be misread as "not running".
-    local info_out
-    info_out=$(docker info 2>&1 || true)
-    if grep -qi 'permission denied' <<<"$info_out"; then
+  if [[ "$(docker_state)" != "ok" ]]; then
+    if [[ "$(docker_state)" == "denied" ]]; then
       printf 'This account is not allowed to use Docker.'
     else
       printf 'Docker is installed but is not running.'

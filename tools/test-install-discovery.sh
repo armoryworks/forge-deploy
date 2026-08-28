@@ -139,6 +139,33 @@ out=$(run "$SANDBOX/dev-checkout" "")
 check "uses the recorded root"        "$out" "$SANDBOX/real-install"
 refute "not the checkout it stood in" "$out" "root=$SANDBOX/dev-checkout"
 
+scenario "The Docker probe classifies, in one place, for every caller"
+# shellcheck source=../scripts/docker-probe.sh
+( . "$REPO_ROOT/scripts/docker-probe.sh"
+  probe_bin="$SANDBOX/probe-bin"; mkdir -p "$probe_bin"
+  fake_docker() { printf '#!/usr/bin/env bash\n%s\n' "$1" > "$probe_bin/docker"; chmod +x "$probe_bin/docker"; }
+
+  fake_docker 'echo "permission denied while trying to connect" >&2; exit 1'
+  got=$(PATH="$probe_bin:$PATH" docker_state)
+  check "a denied socket is 'denied'"  "$got" "denied"
+
+  fake_docker 'echo "Cannot connect to the Docker daemon" >&2; exit 1'
+  got=$(PATH="$probe_bin:$PATH" docker_state)
+  check "a dead daemon is 'stopped'"   "$got" "stopped"
+
+  fake_docker 'exit 0'
+  got=$(PATH="$probe_bin:$PATH" docker_state)
+  check "a working daemon is 'ok'"     "$got" "ok"
+
+  printf '%d %d\n' "$PASS" "$FAIL" > "$SANDBOX/probe-tally" ) || true
+read -r PASS FAIL < "$SANDBOX/probe-tally"
+
+# The classification the operator actually hit: pipefail must not swallow it.
+got=$(set -euo pipefail; . "$REPO_ROOT/scripts/docker-probe.sh"
+      PATH="$SANDBOX/probe-bin:$PATH"; printf '#!/usr/bin/env bash\necho "permission denied" >&2; exit 1\n' > "$SANDBOX/probe-bin/docker"
+      docker_state)
+check "survives set -o pipefail"       "$got" "denied"
+
 scenario "install-forge-deploy.sh wires the CLI to the tree it was run from"
 JQ="$(command -v jq || true)"; [[ -n "$JQ" ]] || JQ="${FORGE_TEST_JQ:-}"
 if [[ ! -x "$JQ" ]]; then

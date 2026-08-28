@@ -13,6 +13,11 @@
 
 set -euo pipefail
 
+REFRESH_TREE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly REFRESH_TREE
+# shellcheck source=scripts/docker-probe.sh
+. "${REFRESH_TREE}/scripts/docker-probe.sh"
+
 # ─────────────────────────────────────────────────────────────
 # Phase 7: Pi-side guard — forge-deploy supersedes refresh on prod
 # ─────────────────────────────────────────────────────────────
@@ -114,10 +119,19 @@ if ! command -v docker &>/dev/null; then
     exit 1
 fi
 
-if ! docker info &>/dev/null 2>&1; then
-    echo "    Docker daemon is not running. Start it and try again."
-    exit 1
-fi
+case "$(docker_state)" in
+    ok) ;;
+    denied)
+        echo "    Docker is running, but this account cannot use it."
+        echo "    Add yourself to the docker group, then start a new session:"
+        echo "      sudo usermod -aG docker \$USER"
+        echo "      newgrp docker      # or log out and back in"
+        exit 1 ;;
+    *)
+        echo "    Docker daemon is not running. Start it and try again."
+        echo "      sudo systemctl start docker"
+        exit 1 ;;
+esac
 ok "Docker is running"
 
 if [[ ! -f "docker-compose.yml" ]]; then
