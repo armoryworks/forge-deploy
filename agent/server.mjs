@@ -29,7 +29,12 @@ import { fileURLToPath } from 'node:url';
 const AGENT_VERSION = '0.1.0';
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CLI = join(REPO_ROOT, 'scripts', 'forge-deploy');
-const STATE_FILE = '/etc/forge/deploy-state.json';
+// Same override the CLI honours. The two must agree on where deploy state
+// lives, or the agent reports "no recorded version" for tiers the CLI just
+// deployed.
+const STATE_FILE = process.env.FORGE_STATE_DIR
+  ? join(process.env.FORGE_STATE_DIR, 'deploy-state.json')
+  : '/etc/forge/deploy-state.json';
 const JOBS_DIR = process.env.FORGE_AGENT_JOBS_DIR ?? '/var/lib/forge-agent/jobs';
 // Read by forge-ui (mounted read-only, served as /upgrade-status.json) so a
 // browser can tell "Forge is upgrading" from "Forge is down" without the API.
