@@ -250,6 +250,45 @@ function startLocalStep(meta, step, i) {
   step.startedAt = new Date().toISOString();
 }
 
+// The marker is served by whichever box fronts the browser, which on a split
+// install is not the box coordinating the upgrade. Without this, the lock only
+// covers the peer's own leg and the shop sees a bare outage while the API — on
+// the coordinator — is being replaced.
+async function peerMarker(peer, body) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), 10_000);
+  try {
+    await fetch(`${peer.url}/marker`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'content-type': 'application/json', 'x-forge-agent-token': TOKEN },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    // A peer that cannot be locked is not a reason to abort the upgrade; it
+    // degrades to the behaviour we had before, on that box only.
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function markerBody(meta) {
+  const running = meta.state === 'running';
+  return {
+    state: running ? 'running' : meta.state === 'succeeded' ? 'succeeded' : 'stopped',
+    startedAt: meta.startedAt,
+    endedAt: meta.endedAt ?? null,
+    expiresAt: new Date(Date.parse(meta.startedAt) + markerTtlMs()).toISOString(),
+    message: running ? 'Forge is being updated. This screen will come back on its own.' : null,
+  };
+}
+
+function fanOutMarker(meta) {
+  const spec = JOB_ACTIONS[meta.action];
+  if (!spec?.fanOut) return;
+  for (const peer of peers()) void peerMarker(peer, markerBody(meta));
+}
+
 async function peerFetch(step, path, init = {}) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), 20_000);
@@ -331,6 +370,7 @@ function finishJob(meta) {
   meta.endedAt = new Date().toISOString();
   writeMeta(meta);
   writeMarker(meta);
+  fanOutMarker(meta);
 }
 
 const supervising = new Set();
@@ -438,6 +478,7 @@ function startJob({ action, svc, tag }) {
   };
   writeMeta(meta);
   writeMarker(meta);
+  fanOutMarker(meta);
   supervise(id);
   prune();
   return meta;
@@ -560,6 +601,24 @@ const server = createServer(async (req, res) => {
     const busy = currentJob();
     if (busy) return json(res, 409, { error: `busy: ${busy.action} still running`, jobId: busy.id });
     return json(res, 202, publicJob(startJob(parsed)));
+  }
+
+  // A coordinator locking this box for an upgrade it is running elsewhere.
+  // Never overrides a marker this box's own running job owns.
+  if (req.method === 'POST' && path === '/marker') {
+    const body = await readBody(req);
+    if (currentJob()) return json(res, 200, { ok: true, ignored: 'local job owns the marker' });
+    const state = body.state === 'running' ? 'running' : body.state === 'succeeded' ? 'succeeded' : 'stopped';
+    try {
+      writeFileSync(MARKER_FILE, JSON.stringify({
+        state,
+        startedAt: body.startedAt ?? new Date().toISOString(),
+        endedAt: body.endedAt ?? null,
+        expiresAt: body.expiresAt ?? null,
+        message: state === 'running' ? 'Forge is being updated. This screen will come back on its own.' : null,
+      }, null, 2));
+    } catch { /* best effort */ }
+    return json(res, 200, { ok: true });
   }
 
   if (req.method === 'GET' && path === '/jobs') {
