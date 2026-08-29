@@ -13,6 +13,13 @@ services:
     container_name: forge-ui
     ports:
       - "${UI_BIND:-127.0.0.1}:${UI_PORT:-4200}:80"
+    volumes:
+      # Upgrade marker written by forge-agent on the host. Read-only, and the
+      # only reason forge-ui touches the host filesystem: it lets a browser tell
+      # "Forge is upgrading" from "Forge is down" while forge-api is being
+      # replaced. Missing directory is fine — nginx serves 404, which the SPA
+      # reads as "no upgrade in flight".
+      - ${FORGE_AGENT_STATE:-/var/lib/forge-agent}:/var/lib/forge-agent:ro
     depends_on:
       forge-api:
         condition: service_started

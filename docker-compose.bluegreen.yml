@@ -1,0 +1,35 @@
+# Blue/green standby for the web UI.
+#
+# forge-ui is stateless nginx serving a built SPA, which makes it the one tier
+# that can be upgraded with no downtime: bring the new version up beside the old
+# on a second port, health check it, flip the host-nginx upstream, retire the
+# old container. Rollback is flipping back.
+#
+# This is NOT viable for forge-api — two API copies share one Postgres, and the
+# second migrates the schema out from under the first on boot. See
+# forge/docs/delivery/in-progress/self-service-upgrade/SPEC.md section 5.
+#
+# forge-ui-b is the standby half of the pair. It carries a profile so it never
+# starts on a plain `up`; forge-deploy names it explicitly during a cutover,
+# which activates the profile for that one command. UI_LIVE_SERVICE in .env
+# records which half currently owns the edge.
+services:
+  forge-ui-b:
+    image: ghcr.io/armoryworks/forge-ui:${UI_IMAGE_TAG:-latest}
+    container_name: forge-ui-b
+    profiles: [bluegreen]
+    ports:
+      - "${UI_BIND:-127.0.0.1}:${UI_PORT_ALT:-4201}:80"
+    volumes:
+      - ${FORGE_AGENT_STATE:-/var/lib/forge-agent}:/var/lib/forge-agent:ro
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    restart: unless-stopped

@@ -31,6 +31,7 @@ readonly ENV_FILE="${REPO_ROOT}/.env"
 readonly COMPOSE_BASE="${REPO_ROOT}/docker-compose.yml"
 readonly COMPOSE_PROD="${REPO_ROOT}/docker-compose.prod.yml"
 readonly COMPOSE_COHOST="${REPO_ROOT}/docker-compose.cohost.yml"
+readonly COMPOSE_BLUEGREEN="${REPO_ROOT}/docker-compose.bluegreen.yml"
 readonly REGISTRY_HOST="ghcr.io"
 readonly REGISTRY_OWNER="armoryworks"
 # Max seconds to wait for a service to report healthy before rolling back.
@@ -576,6 +577,9 @@ compose() {
   mode=$(env_get QBE_HOSTING_MODE 2>/dev/null | tr -d '[:space:]')
   [[ "$mode" == "cohost" ]] && files+=(-f "$COMPOSE_COHOST")
   files+=(-f "$COMPOSE_PROD")
+  # Blue/green standby for the UI. Profiled off, so listing it here costs a
+  # plain `up` nothing; forge-deploy names forge-ui-b explicitly at cutover.
+  [[ -f "$COMPOSE_BLUEGREEN" ]] && files+=(-f "$COMPOSE_BLUEGREEN")
   # setup.sh writes public/SSL port bindings into docker-compose.override.yml.
   # An explicit -f list disables compose's auto-loading of it, so it MUST be
   # listed here — omitting it recreates containers without their public ports
@@ -1180,6 +1184,12 @@ server {
     location = /signout-callback-oidc { proxy_buffering off; proxy_pass http://${api}; $(edge_proxy_headers) }
     location /connect/              { proxy_pass http://${api}; $(edge_proxy_headers) }
     location /.well-known/          { proxy_pass http://${api}; $(edge_proxy_headers) }
+
+    # ---- Upgrade marker -> straight off the host ----
+    # forge-agent writes this; the edge serves it without involving any
+    # container, so a browser can still tell "upgrading" from "down" while the
+    # UI is mid-cutover and the API is being replaced. Generic envelope only.
+    location = /upgrade-status.json { alias /var/lib/forge-agent/upgrade.json; default_type application/json; expires -1; }
 
     # ---- SPA -> UI target ----
     location / { proxy_pass http://${ui}; $(edge_proxy_headers) }
@@ -2310,6 +2320,152 @@ reconcile_schema() {
   return 1
 }
 
+# ─────────────────────────────────────────────────────────────
+# Blue/green UI cutover
+#
+# The UI is the one tier that can move with no downtime: it is stateless nginx
+# serving a built SPA. Bring the new version up on the standby port, health
+# check it, flip the host-nginx upstream, retire the old container. A standby
+# that never answers is thrown away and the live container keeps serving —
+# unlike the in-place path, a failed UI deploy is never visible to the shop.
+#
+# It also keeps nginx alive throughout, which is what lets a browser keep
+# showing the upgrade lock while forge-api is being replaced.
+# ─────────────────────────────────────────────────────────────
+
+ui_live_service() {
+  local v; v=$(env_get UI_LIVE_SERVICE | tr -d '[:space:]')
+  printf '%s' "${v:-forge-ui}"
+}
+
+ui_service_port() {
+  local v
+  case "$1" in
+    forge-ui)   v=$(env_get UI_PORT | tr -d '[:space:]');     printf '%s' "${v:-4200}" ;;
+    forge-ui-b) v=$(env_get UI_PORT_ALT | tr -d '[:space:]'); printf '%s' "${v:-4201}" ;;
+    *) return 1 ;;
+  esac
+}
+
+edge_vhost_files() {
+  sudo sh -c "ls -1 /etc/nginx/conf.d/${EDGE_TAG}-*.conf /etc/nginx/sites-enabled/${EDGE_TAG}-*.conf 2>/dev/null" || true
+}
+
+# Blue/green needs somewhere to flip. That is the generated host-nginx vhost —
+# on a box where the UI container publishes 443 itself there is no upstream to
+# repoint, and the honest move is the in-place path plus a clear message.
+ui_blue_green_ready() {
+  [[ "$(env_get UI_BLUE_GREEN | tr -d '[:space:]')" != "false" ]] || return 1
+  command -v nginx >/dev/null 2>&1 || sudo test -x /usr/sbin/nginx || return 1
+  [[ -n "$(edge_vhost_files)" ]] || return 1
+}
+
+wait_http_ok() {
+  local url="$1" elapsed=0 timeout
+  timeout=$(health_timeout)
+  while (( elapsed < timeout )); do
+    curl -fsS --max-time 5 -o /dev/null "$url" 2>/dev/null && return 0
+    sleep "$HEALTHCHECK_POLL_INTERVAL"
+    elapsed=$(( elapsed + HEALTHCHECK_POLL_INTERVAL ))
+  done
+  return 1
+}
+
+# Repoint every generated vhost's SPA location at a new port, atomically per
+# nginx reload. A config nginx rejects is restored before it can serve a 502.
+edge_point_ui_at() {
+  local port="$1" f bak pair
+  local -a backups=()
+  for f in $(edge_vhost_files); do
+    bak="${f}.forge-bg.$(date -u +%Y%m%d-%H%M%S)"
+    sudo cp "$f" "$bak"
+    backups+=("${f}|${bak}")
+    sudo sed -i -E "s|(location / \{ proxy_pass http://[^:;]+):[0-9]+;|\1:${port};|" "$f"
+  done
+  (( ${#backups[@]} )) || return 1
+
+  if sudo nginx -t 2>/dev/null; then
+    sudo systemctl reload nginx 2>/dev/null || sudo nginx -s reload
+    return 0
+  fi
+
+  err "nginx rejected the repointed vhost — restoring"
+  for pair in "${backups[@]}"; do
+    sudo cp "${pair#*|}" "${pair%%|*}" || err "Restore of ${pair%%|*} failed — inspect ${pair#*|}"
+  done
+  sudo nginx -t 2>&1 | tail -3
+  return 1
+}
+
+deploy_ui_blue_green() {
+  local target_tag="$1"
+  local live next live_port next_port prior_tag
+  live=$(ui_live_service)
+  next=$([[ "$live" == "forge-ui" ]] && printf 'forge-ui-b' || printf 'forge-ui')
+  live_port=$(ui_service_port "$live")
+  next_port=$(ui_service_port "$next")
+
+  prior_tag=$(state_get forge-ui current)
+  [[ -n "$prior_tag" ]] || prior_tag=$(env_get UI_IMAGE_TAG)
+
+  step "Deploying ui -> ${target_tag} (blue/green: ${live}:${live_port} -> ${next}:${next_port})"
+
+  if ! ghcr_tag_exists forge-ui "$target_tag"; then
+    err "Tag not found in GHCR: ${REGISTRY_OWNER}/forge-ui:${target_tag}"
+    log_event ui "$prior_tag" "$target_tag" "missing-in-ghcr"
+    return 1
+  fi
+  ok "Tag verified in GHCR"
+
+  # The standby reads UI_IMAGE_TAG at create time; the live container is not
+  # recreated, so it keeps serving the old image regardless of this value.
+  env_set UI_IMAGE_TAG "$target_tag"
+
+  if ! compose pull "$next"; then
+    err "docker compose pull failed"
+    env_set UI_IMAGE_TAG "$prior_tag"
+    log_event ui "$prior_tag" "$target_tag" "pull-failed"
+    return 1
+  fi
+  ok "Image pulled"
+
+  if ! compose up -d --force-recreate "$next"; then
+    err "Could not start the standby UI"
+    compose rm -sf "$next" >/dev/null 2>&1 || true
+    env_set UI_IMAGE_TAG "$prior_tag"
+    log_event ui "$prior_tag" "$target_tag" "bluegreen-standby-start-failed"
+    return 1
+  fi
+
+  step "  Waiting for the standby UI on :${next_port} ($(health_timeout) s max)"
+  if ! wait_http_ok "http://127.0.0.1:${next_port}/"; then
+    err "Standby UI never answered — ${live} is still serving and nothing changed"
+    compose rm -sf "$next" >/dev/null 2>&1 || true
+    env_set UI_IMAGE_TAG "$prior_tag"
+    log_event ui "$prior_tag" "$target_tag" "bluegreen-standby-unhealthy"
+    return 1
+  fi
+  ok "Standby healthy"
+
+  step "  Flipping the edge to :${next_port}"
+  if ! edge_point_ui_at "$next_port"; then
+    err "Edge flip failed — ${live} is still serving and nothing changed"
+    compose rm -sf "$next" >/dev/null 2>&1 || true
+    env_set UI_IMAGE_TAG "$prior_tag"
+    log_event ui "$prior_tag" "$target_tag" "bluegreen-edge-flip-failed"
+    return 1
+  fi
+  ok "Edge now serves the SPA from :${next_port}"
+
+  compose stop "$live" >/dev/null 2>&1 || true
+  compose rm -f "$live" >/dev/null 2>&1 || true
+  env_set UI_LIVE_SERVICE "$next"
+  state_set forge-ui "$target_tag"
+  log_event ui "$prior_tag" "$target_tag" "ok-bluegreen"
+  ok "Old UI retired — cutover complete with no downtime"
+  return 0
+}
+
 # Deploy a single service to a single tag.
 deploy_service() {
   local svc_id="$1" target_tag="$2"
@@ -2325,6 +2481,14 @@ deploy_service() {
   prior_tag=$(state_get "$repo" current)
   if [[ -z "$prior_tag" ]]; then
     prior_tag=$(env_get "$envvar")
+  fi
+
+  # The UI moves by cutover rather than by replacement wherever there is an
+  # edge upstream to flip. Everything else — including the API — keeps the
+  # in-place swap with its health gate and auto-rollback.
+  if [[ "$svc_id" == "ui" ]] && ui_blue_green_ready; then
+    deploy_ui_blue_green "$target_tag"
+    return $?
   fi
 
   step "Deploying $svc_id -> $target_tag"
