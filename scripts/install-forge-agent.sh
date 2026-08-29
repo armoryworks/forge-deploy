@@ -21,7 +21,17 @@ PANEL_TOKEN_FILE="/etc/forge/panel.token"
 STATE_HOME="/var/lib/forge-agent"
 UNIT="/etc/systemd/system/forge-agent.service"
 PORT="${FORGE_AGENT_PORT:-8484}"
-BIND="${FORGE_AGENT_BIND:-127.0.0.1}"
+ENV_FILE="${REPO_ROOT}/.env"
+
+# forge-api reaches the agent from inside a container, so loopback is not a
+# usable default here — it would be reachable only from the host. The docker
+# bridge gateway is reachable from containers and from this host, and is not
+# routable from the LAN the way 0.0.0.0 would be.
+detect_bridge_ip() {
+  docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true
+}
+BIND="${FORGE_AGENT_BIND:-$(detect_bridge_ip)}"
+BIND="${BIND:-172.17.0.1}"
 
 [[ -f "$SERVER" ]] || { echo "agent/server.mjs not found — refresh the deploy tree first." >&2; exit 1; }
 
@@ -82,13 +92,42 @@ if ! systemctl is-active --quiet forge-agent.service; then
   exit 1
 fi
 
+# Wire it into .env ourselves. Printing the values and trusting an operator to
+# paste them correctly is how a feature ships that nobody can turn on.
+if [[ -f "$ENV_FILE" ]]; then
+  set_env() {
+    local key="$1" val="$2" tmp
+    tmp=$(mktemp)
+    if grep -qE "^${key}=" "$ENV_FILE"; then
+      awk -v k="$key" -v v="$val" 'BEGIN{FS=OFS="="} $1==k{print k "=" v; next} {print}' "$ENV_FILE" > "$tmp"
+    else
+      cp "$ENV_FILE" "$tmp"; printf '%s=%s\n' "$key" "$val" >> "$tmp"
+    fi
+    mv "$tmp" "$ENV_FILE"
+  }
+  set_env DEPLOY_AGENT_URL "http://${BIND}:${PORT}"
+  set_env DEPLOY_AGENT_TOKEN "$TOKEN"
+  echo "Wired into ${ENV_FILE} (DEPLOY_AGENT_URL, DEPLOY_AGENT_TOKEN)."
+
+  # forge-api only reads these at container start.
+  if command -v docker >/dev/null 2>&1; then
+    echo "Recreating forge-api so it picks them up..."
+    if (cd "$REPO_ROOT" && bash scripts/forge-deploy compose up -d forge-api >/dev/null 2>&1); then
+      echo "forge-api restarted."
+    else
+      echo "Could not restart forge-api automatically — run: forge-deploy compose up -d forge-api"
+    fi
+  fi
+else
+  echo "No ${ENV_FILE} yet — after ./setup.sh, re-run this script to wire the agent in."
+fi
+
 echo
 echo "=================================================================="
 echo "  Forge deploy agent is running on ${BIND}:${PORT}."
 echo
-echo "  Wire it into Forge so upgrades appear under Admin -> Updates:"
-echo "    Deploy__AgentUrl=http://${BIND}:${PORT}"
-echo "    Deploy__AgentToken=\$(sudo cat ${TOKEN_FILE})"
+echo "  Upgrades now appear in Forge under Admin -> Updates."
+echo "  ./forge-upgrade.sh still works and remains the recovery path."
 echo
 echo "  The agent has no web UI and no login. Do NOT expose this port"
 echo "  through the public reverse proxy."

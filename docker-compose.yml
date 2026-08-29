@@ -167,10 +167,21 @@ services:
       - Mobile__CrashReportingDsn=${MOBILE_CRASH_DSN:-}
       - APP_VERSION=${APP_VERSION:-dev}
       - GIT_COMMIT=${GIT_COMMIT:-}
+      # Self-service upgrade: where forge-agent listens, and the shared secret.
+      # Both empty by default — the admin Updates screen then reports that no
+      # agent is installed and points at the command line, which is the correct
+      # state for a box whose upgrades are not the tenant's to run.
+      # install-forge-agent.sh fills these in and recreates this container.
+      - Deploy__AgentUrl=${DEPLOY_AGENT_URL:-}
+      - Deploy__AgentToken=${DEPLOY_AGENT_TOKEN:-}
     volumes:
       - ./docs:/app/docs:ro
       - ${LOCAL_STORAGE_PATH:-./storage}:/app/storage
       - ./tools:/app/tools:ro
+    extra_hosts:
+      # forge-agent runs on the host, not in this network. Harmless when no
+      # agent is installed.
+      - "host.docker.internal:host-gateway"
     depends_on:
       forge:
         condition: service_healthy
@@ -189,7 +200,7 @@ services:
     restart: unless-stopped
 
   forge:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:pg18
     container_name: forge
     ports:
       - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
@@ -197,6 +208,9 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-forge}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      # PG18 moved the image default to /var/lib/postgresql/18/docker; keep the
+      # historical path so the existing data volume and runbooks still line up.
+      - PGDATA=/var/lib/postgresql/data
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -394,12 +408,15 @@ services:
     restart: unless-stopped
 
   forge-crash-db:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: forge-crash-db
     environment:
       - POSTGRES_DB=glitchtip
       - POSTGRES_USER=glitchtip
       - POSTGRES_PASSWORD=${CRASH_DB_PASSWORD:-glitchtip}
+      # PG18 moved the image default to /var/lib/postgresql/18/docker; keep the
+      # historical path so the existing data volume and runbooks still line up.
+      - PGDATA=/var/lib/postgresql/data
     volumes:
       - crashpgdata:/var/lib/postgresql/data
     profiles:
@@ -407,7 +424,7 @@ services:
     restart: unless-stopped
 
   forge-crash-cache:
-    image: valkey/valkey:8-alpine
+    image: valkey/valkey:9-alpine
     container_name: forge-crash-cache
     profiles:
       - crash-reporting
