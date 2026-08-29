@@ -240,9 +240,9 @@ This specific bug was fixed; see CHANGELOG.md.
 
 **Symptom**: `forge-deploy deploy api <tag>` pulls and starts the new image, then prints `Service did not become healthy — rolling back to <prior>` once the wait passes the timeout. The rolled-back (older) image comes up fine.
 
-**Cause**: forge-api does its slow startup work **before** it serves traffic — `MigrateAsync` applies any pending EF Core migrations, the seeders run, and `/api/v1/health` is a *composite* readiness check that stays `503` until Postgres, Hangfire, MinIO, **and** SignalR all report healthy. The deploy gate polls `http://127.0.0.1:<API_PORT>/api/v1/health` with `curl -fsS`, which treats `503` (and connection-refused while still migrating) as "not healthy". Against a populated database, a clean deploy legitimately needs longer than the old fixed 60s, so the gate fired and rolled back a build that was actually fine.
+**Cause**: forge-api does its slow startup work **before** it serves traffic — `SchemaBootstrapper` provisions the schema on a fresh database (a no-op on an existing one), the seeders run, and `/api/v1/health` is a *composite* readiness check that stays `503` until Postgres, Hangfire, MinIO, **and** SignalR all report healthy. The deploy gate polls `http://127.0.0.1:<API_PORT>/api/v1/health` with `curl -fsS`, which treats `503` (and connection-refused while still starting) as "not healthy". Against a populated database, a clean deploy legitimately needs longer than the old fixed 60s, so the gate fired and rolled back a build that was actually fine.
 
-> ⚠ This rollback is risky, not just annoying: `MigrateAsync` may have **already applied the new schema** before the gate gave up, leaving the older (rolled-back) image running against a newer database. If a deploy keeps rolling back, check `docker logs forge-api` for `[DB-LIFECYCLE] Running MigrateAsync...` and confirm the schema state before re-deploying.
+> ⚠ This rollback is risky, not just annoying. When `ENABLE_SCHEMA_RECONCILE=true`, the pre-update forge-db reconcile has **already moved the schema forward** by the time the gate gives up, leaving the older (rolled-back) image running against a newer database. If a deploy keeps rolling back, confirm the schema state before re-deploying — see the downgrade procedure below.
 
 **Fix**: the timeout is now configurable and defaults to **180s**. Raise it for slower hosts / larger databases by setting it in `.env` (persistent) or as a one-off shell env var:
 
@@ -254,7 +254,7 @@ echo 'HEALTHCHECK_TIMEOUT_SECS=300' >> /opt/forge-deploy/.env
 HEALTHCHECK_TIMEOUT_SECS=300 forge-deploy deploy api <tag>
 ```
 
-Confirm what's actually slow with `docker logs -f forge-api` during the deploy — the bulk of the time before the first `200` should be the `MigrateAsync` line. If it's a transient MinIO/Hangfire blip rather than migrations, fix that dependency instead of just raising the timeout.
+Confirm what's actually slow with `docker logs -f forge-api` during the deploy. On an existing database the schema step is a no-op, so time before the first `200` is seeding plus dependency health — if it's a transient MinIO/Hangfire blip, fix that dependency instead of just raising the timeout.
 
 ### Health check returns 404 at `/health`
 
@@ -364,9 +364,9 @@ The startup line should now read `Clock: SystemClock` with no mention of `(devel
 
 ### Older forge-api image fails to start against a newer database
 
-**Symptom**: After deploying an older `forge-api` image (e.g., rolling back), the container fails on startup with EF Core errors about missing migrations or invalid schema.
+**Symptom**: After deploying an older `forge-api` image (e.g., rolling back), the container fails on startup, or misbehaves, against a schema it does not expect.
 
-**Cause**: forge-api auto-applies EF Core migrations on startup via DbUp. There is no manual migration step. This is ergonomic for forward deploys but means **the database schema is always at-or-ahead of whatever image last ran**. Deploying an older image against a newer schema will throw at startup because the older image expects an older schema.
+**Cause**: there are no EF Core migrations. The schema is desired-state SQL owned by [forge-db](https://github.com/armoryworks/forge-db), reconciled by the pre-update step when `ENABLE_SCHEMA_RECONCILE=true`; `SchemaBootstrapper` inside forge-api only provisions a *fresh* database and is a no-op otherwise. The practical consequence is unchanged: **the schema is at-or-ahead of whatever image last ran**, and an older image can meet a newer schema.
 
 **Fix**: Downgrades require a deliberate rollback procedure:
 

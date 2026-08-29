@@ -1498,7 +1498,7 @@ fi
 # 8. Wait for API health
 # ─────────────────────────────────────────────────────────────
 
-step "Waiting for API to become healthy (first start includes database migration)"
+step "Waiting for API to become healthy (first start provisions the schema and seeds)"
 
 # Longer timeout for ARM / low-RAM systems
 if $IS_ARM || $IS_LOW_RAM; then

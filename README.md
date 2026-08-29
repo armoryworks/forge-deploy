@@ -36,17 +36,25 @@ npx @armoryworks/forge-deploy --lan
 npx @armoryworks/forge-deploy --public
 
 # Choose the install directory (first bare argument)
-npx @armoryworks/forge-deploy /opt/forge --lan
+npx @armoryworks/forge-deploy /opt/forge-deploy --lan
 ```
+
+`/opt/forge-deploy` is the conventional location — it is the default the
+`forge-deploy` CLI and the docs assume — but any directory you own works.
+
+> **GHCR access.** The `ghcr.io/armoryworks/*` images are not anonymously
+> pullable. Before installing, run `docker login ghcr.io -u <github-username>`
+> and paste a GitHub personal access token that has the `read:packages`
+> scope. (Or skip GHCR entirely with `--source`, which builds the images
+> from the sibling source repos.)
 
 ## npx or npm install?
 
-Either works — they're two verbs of the same tool, and both end up
-running the same `forge-deploy` command:
+Either works, and both end up running the same `forge-deploy` command:
 
 ```bash
-# One-shot (recommended): downloads to a temp cache, runs once,
-# leaves nothing installed. Always executes the latest published version.
+# One-shot (recommended): downloads to a temp cache, runs once, leaves
+# nothing installed. Always executes the latest published version.
 npx @armoryworks/forge-deploy --lan
 
 # Persistent install: keeps the CLI on your PATH as `forge-deploy`.
@@ -54,25 +62,19 @@ npm install -g @armoryworks/forge-deploy
 forge-deploy --lan
 ```
 
-The difference is what's left behind. `npx` disposes of the package after
-it runs, so every invocation is current. `npm install -g` keeps a copy
-that stays at whatever version you installed until you `npm update -g` —
-fine if you prefer a permanent `forge-deploy` command, just remember the
-copy can go stale. Since this package is a thin bootstrapper (the deploy
-tree itself is always fetched fresh from GitHub either way), a stale
-global install usually still works — you'd only miss changes to the
-installer itself.
-
-We document the `npx` form because run-once installers are its canonical
-use, but there is no functional difference in what gets deployed.
+The difference is only what's left behind. A global install stays at
+whatever version you installed until you `npm update -g` — but since the
+deploy tree itself is always fetched fresh from GitHub, a stale global
+install only matters if the bootstrapper itself changed.
 
 ## Requirements
 
 - **Docker** with the compose plugin (`docker compose`)
 - **Node.js 18+** (only to run this installer)
-- Linux or macOS with `bash` and `tar`; Windows 10+ uses `setup.ps1` via
-  PowerShell automatically
-- 4 GB RAM recommended — low-RAM systems get automatic memory tuning
+- `bash` and `tar` on Linux or macOS; on Windows 10+ this installer calls
+  `setup.ps1` via PowerShell automatically
+- 4 GB RAM minimum, 8 GB+ recommended — low-RAM systems get automatic
+  memory tuning
 
 ## Options
 
@@ -90,6 +92,7 @@ script. The most useful flags:
 | `--hostname <fqdn>` | Hostname for the certificate CN/SAN (otherwise auto-detected) |
 | `--cohost` | Run behind an existing host-level reverse proxy (nginx, Caddy, cloudflared) |
 | `--include-ai` | Also start the Ollama AI assistant |
+| `--include-tts` | Also start Coqui TTS for training-video narration |
 | `--include-signing` | Also start the DocuSeal e-signature service |
 | `--include-all` | All optional services |
 | `--source` | Developer mode — build images locally from sibling source repos |
@@ -115,27 +118,46 @@ check reads `[OK]`.
 
 ## Updating
 
-Re-run the same command in place:
+To move a running install to a newer release, use the gated upgrade path:
 
 ```bash
-npx @armoryworks/forge-deploy /opt/forge
+npx @armoryworks/forge-deploy upgrade                # newest release
+npx @armoryworks/forge-deploy upgrade 1.2.3          # a specific release
 ```
 
-The installer refreshes the deploy files and re-runs setup, which pulls
-newer images. Your `.env`, compose overrides, and data volumes are left
+That refreshes the deploy tree and then hands off to `scripts/forge-deploy`,
+which runs the whole sequence: verify the tag exists in GHCR → pin `.env`
+→ fresh backup → **database schema reconcile** → container swap → health
+gate → automatic rollback of the pin if anything fails. Forge has no EF
+Core migrations; the schema reconcile is what brings a populated database
+forward, so a bare `docker compose pull && up` is not a supported upgrade.
+The target directory defaults to `/opt/forge-deploy` — pass another as a
+bare argument.
+
+To refresh only the deploy files (compose configuration, scripts) without
+changing versions, re-run the installer in place:
+
+```bash
+npx @armoryworks/forge-deploy /opt/forge-deploy
+```
+
+Either way your `.env`, compose overrides, and data volumes are left
 untouched — configuration and data survive updates.
 
 ## What you get
 
 A Docker Compose stack: the Forge API (.NET), the web UI (Angular behind
-nginx), PostgreSQL, MinIO object storage, and a nightly backup service —
-plus optional AI, TTS, and e-signature containers.
+nginx), PostgreSQL 17 with pgvector, MinIO object storage, and a backup
+service that takes a `pg_dump` nightly — plus optional AI, TTS, logging,
+crash-reporting, and e-signature containers.
 
 ## Documentation
 
 - [Deployment guide](https://github.com/armoryworks/forge-deploy/blob/main/docs/DEPLOY.md)
 - [Troubleshooting](https://github.com/armoryworks/forge-deploy/blob/main/docs/TROUBLESHOOTING.md)
 - [Backup & restore](https://github.com/armoryworks/forge-deploy/blob/main/docs/backup-restore.md)
+- [Outbound email setup](https://github.com/armoryworks/forge-deploy/blob/main/docs/email-setup.md)
+- [Air-gapped bundle](https://github.com/armoryworks/forge-deploy/blob/main/docs/airgap-bundle.md)
 
 ## License
 
