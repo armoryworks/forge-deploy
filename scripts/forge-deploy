@@ -35,8 +35,12 @@ readonly COMPOSE_BASE="${REPO_ROOT}/docker-compose.yml"
 readonly COMPOSE_PROD="${REPO_ROOT}/docker-compose.prod.yml"
 readonly COMPOSE_COHOST="${REPO_ROOT}/docker-compose.cohost.yml"
 readonly COMPOSE_BLUEGREEN="${REPO_ROOT}/docker-compose.bluegreen.yml"
-readonly REGISTRY_HOST="ghcr.io"
-readonly REGISTRY_OWNER="armoryworks"
+# Overridable so the deploy path can be exercised against a throwaway registry
+# — a rehearsal or a demo box should never need a tag published to the real
+# release line, where every client's --update would offer it.
+readonly REGISTRY_HOST="${FORGE_REGISTRY_HOST:-ghcr.io}"
+readonly REGISTRY_OWNER="${FORGE_REGISTRY_OWNER:-armoryworks}"
+readonly REGISTRY_SCHEME="${FORGE_REGISTRY_SCHEME:-https}"
 # Max seconds to wait for a service to report healthy before rolling back.
 # forge-api runs EF Core migrations + warms its composite health check
 # (Postgres, Hangfire, MinIO, SignalR all gate /api/v1/health) BEFORE the
@@ -403,7 +407,7 @@ ghcr_token() {
     printf '%s' "${_GHCR_TOKEN_CACHE[$repo]}"
     return 0
   fi
-  local url="https://${REGISTRY_HOST}/token?service=${REGISTRY_HOST}&scope=repository:${REGISTRY_OWNER}/${repo}:pull"
+  local url="${REGISTRY_SCHEME}://${REGISTRY_HOST}/token?service=${REGISTRY_HOST}&scope=repository:${REGISTRY_OWNER}/${repo}:pull"
   local token creds
   creds=$(ghcr_basic_creds)
   if [[ -n "$creds" ]]; then
@@ -411,9 +415,21 @@ ghcr_token() {
   else
     token=$(curl -fsSL "$url" | jq -r '.token' 2>/dev/null || true)
   fi
-  [[ -n "$token" && "$token" != "null" ]] || return 1
+  if [[ -z "$token" || "$token" == "null" ]]; then
+    # No token endpoint (a plain registry:2) — anonymous pull is expected there.
+    # Cache the empty answer so every call doesn't re-probe.
+    _GHCR_TOKEN_CACHE[$repo]="-"
+    return 0
+  fi
   _GHCR_TOKEN_CACHE[$repo]="$token"
   printf '%s' "$token"
+}
+
+# Emits the Authorization header args only when a token was actually issued.
+registry_auth_args() {
+  local token="$1"
+  [[ -n "$token" && "$token" != "-" ]] && printf '%s\n%s\n' "-H" "Authorization: Bearer $token"
+  return 0
 }
 
 # Optional Basic-auth credentials for private packages. Reads GHCR_USER +
@@ -438,12 +454,12 @@ ghcr_basic_creds() {
 ghcr_list_tags() {
   local repo="$1" token page last="" all="" n=100
   token=$(ghcr_token "$repo") || return 1
-  [[ -n "$token" ]] || return 1
+  local -a auth=(); mapfile -t auth < <(registry_auth_args "$token")
   while :; do
-    local url="https://${REGISTRY_HOST}/v2/${REGISTRY_OWNER}/${repo}/tags/list?n=${n}"
+    local url="${REGISTRY_SCHEME}://${REGISTRY_HOST}/v2/${REGISTRY_OWNER}/${repo}/tags/list?n=${n}"
     [[ -n "$last" ]] && url="${url}&last=${last}"
     page=$(curl -fsSL \
-      -H "Authorization: Bearer $token" \
+      "${auth[@]}" \
       -H "Accept: application/vnd.oci.image.index.v1+json" \
       "$url" | jq -r '.tags[]?' 2>/dev/null || true)
     [[ -z "$page" ]] && break
@@ -463,14 +479,14 @@ ghcr_list_tags() {
 ghcr_manifest_digest() {
   local repo="$1" tag="$2" token
   token=$(ghcr_token "$repo") || return 1
-  [[ -n "$token" ]] || return 1
+  local -a auth=(); mapfile -t auth < <(registry_auth_args "$token")
   curl -fsSL -I \
-    -H "Authorization: Bearer $token" \
+    "${auth[@]}" \
     -H "Accept: application/vnd.oci.image.index.v1+json" \
     -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
     -H "Accept: application/vnd.oci.image.manifest.v1+json" \
     -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-    "https://${REGISTRY_HOST}/v2/${REGISTRY_OWNER}/${repo}/manifests/${tag}" 2>/dev/null \
+    "${REGISTRY_SCHEME}://${REGISTRY_HOST}/v2/${REGISTRY_OWNER}/${repo}/manifests/${tag}" 2>/dev/null \
     | tr -d '\r' \
     | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}' \
     | tail -1
@@ -480,14 +496,14 @@ ghcr_manifest_digest() {
 ghcr_tag_exists() {
   local repo="$1" tag="$2" token http_code
   token=$(ghcr_token "$repo") || return 1
-  [[ -n "$token" ]] || return 1
+  local -a auth=(); mapfile -t auth < <(registry_auth_args "$token")
   http_code=$(curl -s -o /dev/null -w '%{http_code}' \
-    -H "Authorization: Bearer $token" \
+    "${auth[@]}" \
     -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
     -H "Accept: application/vnd.oci.image.manifest.v1+json" \
     -H "Accept: application/vnd.oci.image.index.v1+json" \
     -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
-    "https://${REGISTRY_HOST}/v2/${REGISTRY_OWNER}/${repo}/manifests/${tag}" \
+    "${REGISTRY_SCHEME}://${REGISTRY_HOST}/v2/${REGISTRY_OWNER}/${repo}/manifests/${tag}" \
     -X HEAD)
   [[ "$http_code" == "200" ]]
 }
