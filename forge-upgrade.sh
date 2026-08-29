@@ -82,3 +82,14 @@ fi
 echo
 echo "If the deploy halted listing DESTRUCTIVE schema changes, review them, then re-run:"
 echo "  cd $DEPLOY_DIR && ./scripts/forge-deploy ${TAG:---update} --allow-destructive"
+
+# One-time nudge: the in-app upgrade screen ships with the release, but the
+# agent that performs the work is a host service and cannot install itself from
+# inside a container that the upgrade replaces. Mention it exactly once per box.
+if [[ ! -s /etc/forge/agent.token ]]; then
+  echo
+  echo "Tip: you can run future upgrades from inside Forge (Admin -> Updates)."
+  echo "     One-time setup, from here:"
+  echo "       cd $DEPLOY_DIR && bash scripts/install-forge-agent.sh"
+  echo "     The command line stays available either way — it is the recovery path."
+fi

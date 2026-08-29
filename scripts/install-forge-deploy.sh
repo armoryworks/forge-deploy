@@ -213,6 +213,12 @@ Next steps:
   3. Try:    forge-deploy --help
              forge-deploy --list
              forge-deploy --status
+  4. Optional — upgrade from inside Forge instead of from here:
+             bash ${REPO_ROOT}/scripts/install-forge-agent.sh
+     This is the one step the app cannot do for itself: the agent is a host
+     service, and forge-api is one of the containers an upgrade replaces.
+     Once it is installed and wired, upgrades appear under Admin -> Updates
+     and this command line stays available as the recovery path.
 
 Repo:   ${REPO_ROOT}
 State:  ${STATE_FILE}
