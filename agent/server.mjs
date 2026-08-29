@@ -76,12 +76,23 @@ const JOB_ACTIONS = {
   update:        { argv: () => ['--update'], fanOut: true },
   updateApprove: { argv: () => ['--update', '--allow-destructive'], confirm: 'APPLY', fanOut: true },
   rollback:      { argv: ({ svc }) => (svc ? ['--rollback', svc] : ['--rollback']) },
+  reconcile:     { argv: ({ tag }) => (tag ? ['--reconcile', tag] : ['--reconcile']) },
   deployService: { argv: ({ svc, tag }) => [tag, '--service', svc], needs: ['svc', 'tag'] },
 };
 
 // Peer boxes, from FORGE_PEER_AGENTS in .env: "ui=http://192.168.1.92:8484 db=http://..."
 // Only the coordinator (the box running the API) has these; a peer's own list is empty, which is
 // what stops two boxes from dispatching to each other.
+// The box that owns the database, in a ui/api/db split. Kept separate from
+// FORGE_PEER_AGENTS because it is not just another peer: its step runs BEFORE
+// the local one. The api box skips the schema reconcile (the DB is not on its
+// network), so if this is unset on a split install nothing migrates the schema
+// and the API upgrades against an old database.
+function schemaAgent() {
+  const url = (envGet('FORGE_SCHEMA_AGENT') || '').trim().replace(/\/+$/, '');
+  return /^https?:\/\//.test(url) ? url : null;
+}
+
 function peers() {
   return (envGet('FORGE_PEER_AGENTS') || '')
     .split(/[,\s]+/)
@@ -311,7 +322,7 @@ async function advancePeerStep(meta, step) {
   if (!step.jobId) {
     const response = await peerFetch(step, '/jobs', {
       method: 'POST',
-      body: JSON.stringify({ action: 'update' }),
+      body: JSON.stringify({ action: step.action ?? 'update', tag: step.tag ?? null }),
     });
     if (!response) {
       step.state = 'failed';
@@ -457,21 +468,40 @@ const WRAPPER = '"$FORGE_CLI" "$@"; code=$?; printf %s "$code" > "$FORGE_EXIT_FI
 // Local box first, then each peer in the order .env lists them. The coordinator
 // is the box running the API, because it owns the schema reconcile and is the
 // only agent forge-api can reach from inside a container.
-function planSteps(action, svc, tag) {
+function planSteps(action, svc, tag, releaseTag) {
   const spec = JOB_ACTIONS[action];
-  const steps = [{ kind: 'local', argv: spec.argv({ svc, tag }), state: null }];
+  const steps = [];
+
+  // Schema first, on the box that owns the database. The api box's own
+  // reconcile deliberately skips when the DB is remote, so without this step a
+  // split install migrates nothing and still reports success.
+  const schema = spec.fanOut ? schemaAgent() : null;
+  if (schema) {
+    steps.push({ kind: 'peer', peer: 'db', url: schema, action: 'reconcile', tag: releaseTag, state: null });
+  }
+
+  steps.push({ kind: 'local', argv: spec.argv({ svc, tag }), state: null });
+
   if (spec.fanOut) {
-    for (const p of peers()) steps.push({ kind: 'peer', peer: p.name, url: p.url, state: null });
+    for (const p of peers()) steps.push({ kind: 'peer', peer: p.name, url: p.url, action: 'update', state: null });
   }
   return steps;
 }
 
-function startJob({ action, svc, tag }) {
+// The db box needs the same release tag the coordinator is about to deploy, and
+// only the CLI knows which that is. Ask it the same way the admin screen does.
+async function resolveNewestRelease() {
+  const { exitCode, output } = await runSync(SYNC_ACTIONS.check);
+  if (exitCode !== 10) return null;          // 0 = already current, other = could not tell
+  return output.match(/newest release is (\S+)/)?.[1] ?? null;
+}
+
+function startJob({ action, svc, tag, releaseTag }) {
   const id = randomUUID();
   mkdirSync(jobDir(id), { recursive: true });
   const meta = {
     id, action, svc: svc ?? null, tag: tag ?? null,
-    steps: planSteps(action, svc, tag),
+    steps: planSteps(action, svc, tag, releaseTag),
     state: 'running', exitCode: null,
     startedAt: new Date().toISOString(), endedAt: null,
     needsApproval: null, reason: null, partial: null,
@@ -600,7 +630,21 @@ const server = createServer(async (req, res) => {
     if (parsed.error) return json(res, 400, { error: parsed.error });
     const busy = currentJob();
     if (busy) return json(res, 409, { error: `busy: ${busy.action} still running`, jobId: busy.id });
-    return json(res, 202, publicJob(startJob(parsed)));
+
+    // A split install must migrate the schema on the db box before this box
+    // swaps the API. Refuse rather than silently skip it: an API running
+    // against an unmigrated database is worse than an upgrade that did not start.
+    let releaseTag = parsed.tag ?? null;
+    if (JOB_ACTIONS[parsed.action]?.fanOut && schemaAgent() && !releaseTag) {
+      releaseTag = await resolveNewestRelease();
+      if (!releaseTag) {
+        return json(res, 409, {
+          error: 'A db box is configured (FORGE_SCHEMA_AGENT) but the target release could not be determined, '
+               + 'so the schema step cannot be ordered. Check the registry is reachable, then retry.',
+        });
+      }
+    }
+    return json(res, 202, publicJob(startJob({ ...parsed, releaseTag })));
   }
 
   // A coordinator locking this box for an upgrade it is running elsewhere.

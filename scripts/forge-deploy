@@ -160,6 +160,10 @@ USAGE:
   forge-deploy --list --builds        List main-<sha> build tags only
   forge-deploy --status               Show currently deployed SHA and container health (this box only)
   forge-deploy --rollback             Re-pin to the previously deployed tag
+  forge-deploy --reconcile [tag]      DB box only: apply the declarative schema to the local
+                                      database (backup -> plan -> apply, destructive-gated).
+                                      This is how a ui/api/db split migrates its schema — the
+                                      api box skips the reconcile because the DB is elsewhere.
   forge-deploy --logs                 Tail the deploy history log
   forge-deploy --self-update          git pull forge-deploy + reinstall
   forge-deploy --recover              Doctor: detect common failure modes / an incomplete
@@ -245,7 +249,15 @@ box_service_ids() {
   raw="${raw%"${raw##*[![:space:]]}"}"   # rtrim
   if [[ -z "$raw" ]]; then
     all_service_ids
-    return
+    return 0
+  fi
+  # A db box runs Postgres/MinIO/backup and no versioned component. Without an
+  # explicit "none" the only way to say that was to leave the variable unset,
+  # which means the opposite — the box then believes it deploys api, ui, test
+  # and demo, and a coordinator fanning out to it would try to create forge-api
+  # and forge-ui containers on the database machine.
+  if [[ "$raw" == "none" ]]; then
+    return 0
   fi
   # Emit known ids in SERVICES order, intersected with the declared list.
   local id want
@@ -2650,7 +2662,12 @@ ensure_upgrade_env() {
 cmd_update() {
   local services=() svc repo tags common="" newest current
   mapfile -t services < <(box_service_ids)
-  (( ${#services[@]} )) || die "No components configured on this box (run --setup first)"
+  if (( ${#services[@]} == 0 )); then
+    if [[ "$(env_get FORGE_DEPLOY_SERVICES | tr -d '[:space:]')" == "none" ]]; then
+      die "This box runs no versioned component (FORGE_DEPLOY_SERVICES=none). For a db box, the schema is applied with: forge-deploy --reconcile [tag]"
+    fi
+    die "No components configured on this box (run --setup first)"
+  fi
 
   for svc in "${services[@]}"; do
     repo=$(service_repo "$svc")
@@ -2687,6 +2704,39 @@ cmd_update() {
 
   EXPLICIT_TAG="$newest"
   cmd_deploy "${services[@]}"
+}
+
+# Apply the declarative schema on the box that owns the database.
+#
+# In a ui/api/db split, reconcile_schema deliberately skips on the api box —
+# the DB is not on its compose network. Until this existed, nothing on the db
+# box could run it either, so a fully split install upgraded the API against an
+# unmigrated database and reported success.
+cmd_reconcile() {
+  local tag="${1:-}"
+  [[ -f "$ENV_FILE" ]] || die "Env file not found: $ENV_FILE"
+  [[ -w "$ENV_FILE" ]] || die "Env file not writable: $ENV_FILE"
+
+  local dbh; dbh=$(env_get DB_HOST | tr -d '[:space:]')
+  if [[ -n "$dbh" && "$dbh" != "forge" ]]; then
+    die "This box does not own the database (DB_HOST=${dbh}). Run --reconcile on the db box."
+  fi
+
+  if [[ -n "$tag" ]]; then
+    validate_tag "$tag"
+    env_set SCHEMA_IMAGE_TAG "$tag"
+    ok ".env updated: SCHEMA_IMAGE_TAG=$tag"
+  fi
+  [[ -n "$(env_get SCHEMA_IMAGE_TAG | tr -d '[:space:]')" ]] \
+    || die "SCHEMA_IMAGE_TAG is not set — pass the release tag: forge-deploy --reconcile <tag>"
+
+  if [[ "$(env_get ENABLE_SCHEMA_RECONCILE | tr -d '[:space:]')" != "true" ]]; then
+    env_set ENABLE_SCHEMA_RECONCILE true
+    ok ".env updated: ENABLE_SCHEMA_RECONCILE=true"
+  fi
+
+  reconcile_schema || exit 1
+  ok "Schema reconcile complete"
 }
 
 cmd_deploy() {
@@ -2831,6 +2881,7 @@ main() {
       --builds)          list_mode="builds"; shift ;;
       --status)          mode="status"; shift ;;
       --rollback)        mode="rollback"; shift ;;
+      --reconcile)       mode="reconcile"; shift ;;
       --logs)            mode="logs"; shift ;;
       --components)
         mode="components"
@@ -2933,6 +2984,10 @@ main() {
     update)
       preflight
       cmd_update
+      ;;
+    reconcile)
+      preflight
+      cmd_reconcile "$positional"
       ;;
     "")
       # No mode flag — deploy.
