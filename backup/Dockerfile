@@ -9,7 +9,11 @@
 # land later as alternate mc remote configs driven by env vars (and,
 # eventually, by admin-UI config read from the DB).
 
-FROM postgres:17-alpine
+# Must track the server major in docker-compose.yml (pgvector/pgvector:pgNN).
+# pg_dump refuses to dump a server newer than itself, so a server bump without
+# a matching bump here breaks BOTH the nightly backup and every upgrade — the
+# deploy takes a pre-reconcile backup and aborts when it fails.
+FROM postgres:18-alpine
 
 ARG SUPERCRONIC_VERSION=v0.2.29
 
