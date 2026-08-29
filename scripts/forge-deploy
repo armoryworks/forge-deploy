@@ -41,6 +41,10 @@ readonly COMPOSE_BLUEGREEN="${REPO_ROOT}/docker-compose.bluegreen.yml"
 readonly REGISTRY_HOST="${FORGE_REGISTRY_HOST:-ghcr.io}"
 readonly REGISTRY_OWNER="${FORGE_REGISTRY_OWNER:-armoryworks}"
 readonly REGISTRY_SCHEME="${FORGE_REGISTRY_SCHEME:-https}"
+# Every registry call is bounded. Without this a registry that accepts the
+# connection and then never answers wedges the deploy indefinitely — the CLI
+# sits there, and the in-app screen shows "running" until the marker expires.
+readonly REGISTRY_TIMEOUT="${FORGE_REGISTRY_TIMEOUT:-30}"
 # Max seconds to wait for a service to report healthy before rolling back.
 # forge-api runs EF Core migrations + warms its composite health check
 # (Postgres, Hangfire, MinIO, SignalR all gate /api/v1/health) BEFORE the
@@ -411,9 +415,9 @@ ghcr_token() {
   local token creds
   creds=$(ghcr_basic_creds)
   if [[ -n "$creds" ]]; then
-    token=$(curl -fsSL -u "$creds" "$url" | jq -r '.token' 2>/dev/null || true)
+    token=$(curl -fsSL --connect-timeout 10 --max-time "$REGISTRY_TIMEOUT" -u "$creds" "$url" | jq -r '.token' 2>/dev/null || true)
   else
-    token=$(curl -fsSL "$url" | jq -r '.token' 2>/dev/null || true)
+    token=$(curl -fsSL --connect-timeout 10 --max-time "$REGISTRY_TIMEOUT" "$url" | jq -r '.token' 2>/dev/null || true)
   fi
   if [[ -z "$token" || "$token" == "null" ]]; then
     # No token endpoint (a plain registry:2) — anonymous pull is expected there.
@@ -458,7 +462,7 @@ ghcr_list_tags() {
   while :; do
     local url="${REGISTRY_SCHEME}://${REGISTRY_HOST}/v2/${REGISTRY_OWNER}/${repo}/tags/list?n=${n}"
     [[ -n "$last" ]] && url="${url}&last=${last}"
-    page=$(curl -fsSL \
+    page=$(curl -fsSL --connect-timeout 10 --max-time "$REGISTRY_TIMEOUT" \
       "${auth[@]}" \
       -H "Accept: application/vnd.oci.image.index.v1+json" \
       "$url" | jq -r '.tags[]?' 2>/dev/null || true)
@@ -480,7 +484,7 @@ ghcr_manifest_digest() {
   local repo="$1" tag="$2" token
   token=$(ghcr_token "$repo") || return 1
   local -a auth=(); mapfile -t auth < <(registry_auth_args "$token")
-  curl -fsSL -I \
+  curl -fsSL -I --connect-timeout 10 --max-time "$REGISTRY_TIMEOUT" \
     "${auth[@]}" \
     -H "Accept: application/vnd.oci.image.index.v1+json" \
     -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
@@ -497,14 +501,14 @@ ghcr_tag_exists() {
   local repo="$1" tag="$2" token http_code
   token=$(ghcr_token "$repo") || return 1
   local -a auth=(); mapfile -t auth < <(registry_auth_args "$token")
-  http_code=$(curl -s -o /dev/null -w '%{http_code}' \
+  http_code=$(curl -sI -o /dev/null -w '%{http_code}' \
+    --connect-timeout 10 --max-time "$REGISTRY_TIMEOUT" \
     "${auth[@]}" \
     -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
     -H "Accept: application/vnd.oci.image.manifest.v1+json" \
     -H "Accept: application/vnd.oci.image.index.v1+json" \
     -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
-    "${REGISTRY_SCHEME}://${REGISTRY_HOST}/v2/${REGISTRY_OWNER}/${repo}/manifests/${tag}" \
-    -X HEAD)
+    "${REGISTRY_SCHEME}://${REGISTRY_HOST}/v2/${REGISTRY_OWNER}/${repo}/manifests/${tag}")
   [[ "$http_code" == "200" ]]
 }
 
@@ -768,7 +772,12 @@ list_combined() {
   while IFS= read -r v; do
     [[ -z "$v" ]] && continue
     dg="${digest_by_ver[$v]:-}"
-    sha="${sha_by_digest[$dg]:-}"
+    # An unresolved digest is normal (registry hiccup, or a registry that does
+    # not return Docker-Content-Digest on HEAD). Indexing an associative array
+    # with the empty string is a hard bash error, so the listing died instead of
+    # falling through to the "build hash unresolved" line right below.
+    sha=""
+    [[ -n "$dg" ]] && sha="${sha_by_digest[$dg]:-}"
     local latest_note=""
     if [[ "$first" == "1" ]]; then latest_note="  ${C_DIM}← latest${C_RESET}"; first=0; fi
     if [[ -n "$sha" ]]; then
