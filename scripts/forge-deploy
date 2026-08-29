@@ -24,9 +24,12 @@ set -euo pipefail
 
 readonly FORGE_DEPLOY_VERSION="0.6.1"
 readonly REPO_ROOT="${FORGE_DEPLOY_REPO:-/opt/forge-deploy}"
-readonly STATE_DIR="/etc/forge"
+# Overridable so the whole deploy path can be exercised rootless — by the
+# test matrix here and by CI. Production leaves these unset and gets /etc/forge
+# and /var/log exactly as before.
+readonly STATE_DIR="${FORGE_STATE_DIR:-/etc/forge}"
 readonly STATE_FILE="${STATE_DIR}/deploy-state.json"
-readonly LOG_FILE="/var/log/forge-deploy.log"
+readonly LOG_FILE="${FORGE_LOG_FILE:-/var/log/forge-deploy.log}"
 readonly ENV_FILE="${REPO_ROOT}/.env"
 readonly COMPOSE_BASE="${REPO_ROOT}/docker-compose.yml"
 readonly COMPOSE_PROD="${REPO_ROOT}/docker-compose.prod.yml"
@@ -243,6 +246,10 @@ box_service_ids() {
       [[ "$id" == "$want" ]] && { printf '%s\n' "$id"; break; }
     done
   done
+  # The loop's status is the last non-match, which is normal. Without this the
+  # function "fails" on success, and `box_service_ids | grep -qx <svc>` under
+  # `set -o pipefail` rejects every --service on a scoped box.
+  return 0
 }
 
 # Is a compose service scoped out on this box? (reads FORGE_SCOPED_OUT)
@@ -1141,6 +1148,11 @@ cmd_remote_db() {
 
 # ── Edge (host reverse-proxy vhost) ──────────────────────────────────────────
 readonly EDGE_TAG="forge-deploy"
+# nginx conf dir the edge writes to, and the reload command. Overridable for the
+# same reason: a containerized nginx makes the blue/green cutover testable
+# without touching the host's web server.
+readonly EDGE_CONF_DIR="${FORGE_EDGE_CONF_DIR:-}"
+readonly EDGE_RELOAD_CMD="${FORGE_EDGE_RELOAD_CMD:-}"
 
 # Render a topology-correct nginx vhost to stdout.
 # Args: host ui_target api_target cert key
@@ -2348,7 +2360,25 @@ ui_service_port() {
 }
 
 edge_vhost_files() {
+  if [[ -n "$EDGE_CONF_DIR" ]]; then
+    ls -1 "${EDGE_CONF_DIR}/${EDGE_TAG}-"*.conf 2>/dev/null || true
+    return
+  fi
   sudo sh -c "ls -1 /etc/nginx/conf.d/${EDGE_TAG}-*.conf /etc/nginx/sites-enabled/${EDGE_TAG}-*.conf 2>/dev/null" || true
+}
+
+# sudo only where the files actually need it.
+edge_sudo() {
+  if [[ -n "$EDGE_CONF_DIR" ]]; then "$@"; else sudo "$@"; fi
+}
+
+edge_validate_and_reload() {
+  if [[ -n "$EDGE_RELOAD_CMD" ]]; then
+    bash -c "$EDGE_RELOAD_CMD"
+    return $?
+  fi
+  sudo nginx -t 2>/dev/null || return 1
+  sudo systemctl reload nginx 2>/dev/null || sudo nginx -s reload
 }
 
 # Blue/green needs somewhere to flip. That is the generated host-nginx vhost —
@@ -2356,7 +2386,9 @@ edge_vhost_files() {
 # repoint, and the honest move is the in-place path plus a clear message.
 ui_blue_green_ready() {
   [[ "$(env_get UI_BLUE_GREEN | tr -d '[:space:]')" != "false" ]] || return 1
-  command -v nginx >/dev/null 2>&1 || sudo test -x /usr/sbin/nginx || return 1
+  if [[ -z "$EDGE_CONF_DIR" ]]; then
+    command -v nginx >/dev/null 2>&1 || sudo test -x /usr/sbin/nginx || return 1
+  fi
   [[ -n "$(edge_vhost_files)" ]] || return 1
 }
 
@@ -2378,22 +2410,20 @@ edge_point_ui_at() {
   local -a backups=()
   for f in $(edge_vhost_files); do
     bak="${f}.forge-bg.$(date -u +%Y%m%d-%H%M%S)"
-    sudo cp "$f" "$bak"
+    edge_sudo cp "$f" "$bak"
     backups+=("${f}|${bak}")
-    sudo sed -i -E "s|(location / \{ proxy_pass http://[^:;]+):[0-9]+;|\1:${port};|" "$f"
+    edge_sudo sed -i -E "s|(location / \{ proxy_pass http://[^:;]+):[0-9]+;|\1:${port};|" "$f"
   done
   (( ${#backups[@]} )) || return 1
 
-  if sudo nginx -t 2>/dev/null; then
-    sudo systemctl reload nginx 2>/dev/null || sudo nginx -s reload
+  if edge_validate_and_reload; then
     return 0
   fi
 
   err "nginx rejected the repointed vhost — restoring"
   for pair in "${backups[@]}"; do
-    sudo cp "${pair#*|}" "${pair%%|*}" || err "Restore of ${pair%%|*} failed — inspect ${pair#*|}"
+    edge_sudo cp "${pair#*|}" "${pair%%|*}" || err "Restore of ${pair%%|*} failed — inspect ${pair#*|}"
   done
-  sudo nginx -t 2>&1 | tail -3
   return 1
 }
 
@@ -2638,9 +2668,23 @@ cmd_deploy() {
   local target_services=("$@")  # space-separated svc_ids
   local explicit_tag="${EXPLICIT_TAG:-}"
 
+  # Deploying nothing is not a successful deploy. Without this guard an upstream
+  # bug that empties the list reports "All targeted services deployed
+  # successfully" and exits 0 — a silent no-op that reads as a green upgrade.
+  (( ${#target_services[@]} )) || die "No services targeted — nothing to deploy (check --service and FORGE_DEPLOY_SERVICES)"
+
   local svc_id
   local failed=0
+  local -a deployed=() skipped=()
   for svc_id in "${target_services[@]}"; do
+    # Order is a safety property, not a convenience: the set is deployed
+    # schema -> api -> ui, and continuing past a failed tier is how a shop ends
+    # up running a new UI against the old API it was never built for. A tier
+    # that fails has already rolled itself back; the ones behind it must not go.
+    if (( failed )); then
+      skipped+=("$svc_id")
+      continue
+    fi
     local tag
     if [[ -n "$explicit_tag" ]]; then
       tag="$explicit_tag"
@@ -2648,13 +2692,17 @@ cmd_deploy() {
       tag=$(pick_tag_interactive "$svc_id")
     fi
     validate_tag "$tag"
-    if ! deploy_service "$svc_id" "$tag"; then
+    if deploy_service "$svc_id" "$tag"; then
+      deployed+=("$svc_id")
+    else
       failed=1
     fi
   done
 
   if (( failed )); then
-    err "One or more services failed to deploy — check $LOG_FILE"
+    (( ${#deployed[@]} )) && warn "Already deployed before the failure: ${deployed[*]}"
+    (( ${#skipped[@]} )) && warn "Not attempted (stopped after the failure): ${skipped[*]}"
+    err "Deploy stopped — check $LOG_FILE"
     exit 1
   fi
   ok "All targeted services deployed successfully"
@@ -2870,12 +2918,16 @@ main() {
         cmd_update_interactive
         return 0
       fi
-      local services
+      local services svc_list
       if [[ -n "$service_arg" ]]; then
-        mapfile -t services < <(parse_service_arg "$service_arg")
+        # Command substitution, not process substitution: parse_service_arg's
+        # die() exits a subshell either way, but only this form surfaces the
+        # failure to the caller instead of yielding an empty list.
+        svc_list=$(parse_service_arg "$service_arg") || exit 1
       else
-        mapfile -t services < <(box_service_ids)
+        svc_list=$(box_service_ids)
       fi
+      mapfile -t services <<<"$svc_list"
       EXPLICIT_TAG="$positional"
       # Schema moves with the app: a release deploy sets the flags it implies
       # and pins the reconcile tag in lockstep so the api swap converges the DB

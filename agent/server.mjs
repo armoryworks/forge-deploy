@@ -90,6 +90,15 @@ function peers() {
     });
 }
 
+// Exact names, not a `forge` prefix: compose sets container_name for this
+// stack, and a prefix match also swallows unrelated projects' containers
+// (an e2e run's forge-deploy-forge-api-1) into this install's inventory.
+const STACK_CONTAINERS = new Set([
+  'forge', 'forge-api', 'forge-ui', 'forge-ui-b', 'forge-storage', 'forge-backup',
+  'forge-demo', 'forge-test', 'forge-ai', 'forge-tts', 'forge-logs', 'forge-signing',
+  'forge-crash', 'forge-crash-worker', 'forge-crash-db', 'forge-crash-cache',
+]);
+
 const HALT_RE = /DESTRUCTIVE schema changes detected/;
 const PREMIGRATE_RE = /pre-migrate script\(s\) were already applied/i;
 
@@ -472,7 +481,7 @@ async function stateSnapshot() {
   const containers = raw.split('\n').filter(Boolean).flatMap((l) => {
     try {
       const c = JSON.parse(l);
-      return c.Names?.startsWith('forge')
+      return STACK_CONTAINERS.has(c.Names)
         ? [{ name: c.Names, image: c.Image, status: c.Status, ports: c.Ports ?? '' }]
         : [];
     } catch { return []; }
