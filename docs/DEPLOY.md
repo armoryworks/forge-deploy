@@ -247,7 +247,7 @@ Expected state:
 
 | Service          | Image                                | Status             |
 |------------------|--------------------------------------|--------------------|
-| `forge`          | `pgvector/pgvector:pg17`             | `Up (healthy)`     |
+| `forge`          | `pgvector/pgvector:pg18`             | `Up (healthy)`     |
 | `forge-api`      | `ghcr.io/armoryworks/forge-api:latest` | `Up (healthy)`     |
 | `forge-storage`  | `minio/minio`                        | `Up (healthy)`     |
 | `forge-ui`       | `ghcr.io/armoryworks/forge-ui:latest`  | `Up (healthy)`     |

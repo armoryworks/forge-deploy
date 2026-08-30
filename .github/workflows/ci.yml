@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Validate docker-compose files
         run: |
@@ -64,7 +64,7 @@ jobs:
         run: ./tools/test-install-e2e.sh
 
       - name: Lint Dockerfiles (hadolint)
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.5.0
         with:
           recursive: true
           ignore: DL3008,DL3015,DL3018      # apt/apk version pinning warnings — too noisy

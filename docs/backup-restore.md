@@ -91,7 +91,7 @@ docker run -d --name restore-test-db \
   -e POSTGRES_PASSWORD=restoretest \
   -e POSTGRES_DB=forge \
   -p 15432:5432 \
-  postgres:17-alpine
+  postgres:18-alpine
 
 docker run -d --name restore-test-minio \
   -e MINIO_ROOT_USER=minioadmin \
@@ -188,7 +188,7 @@ those after the restore is the same as any normal deploy
 ## 6. Operational notes
 
 - Backups run as the postgres user inside the container (image is
-  `postgres:17-alpine`). They connect to the live forge-* services
+  `postgres:18-alpine`). They connect to the live forge-* services
   over the compose network — no special host access needed.
 - A snapshot of a fresh install is ~50-100 MB. With real production
   data (parts, jobs, attachments) expect 1-5 GB per snapshot in the

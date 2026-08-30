@@ -178,7 +178,7 @@ untouched — configuration and data survive updates.
 ## What you get
 
 A Docker Compose stack: the Forge API (.NET), the web UI (Angular behind
-nginx), PostgreSQL 17 with pgvector, MinIO object storage, and a backup
+nginx), PostgreSQL 18 with pgvector, MinIO object storage, and a backup
 service that takes a `pg_dump` nightly — plus optional AI, TTS, logging,
 crash-reporting, and e-signature containers.
 
