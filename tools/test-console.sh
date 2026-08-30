@@ -55,22 +55,46 @@ FAKE
 
 cat > "$SANDBOX/bin/curl" <<'FAKE'
 #!/usr/bin/env bash
+# Models the two things the real CLI must tell apart: curl failing outright
+# (non-zero, no body) versus the registry answering, where the status IS the
+# diagnosis. Callers passing -w '%{http_code}' get the code on its own trailing
+# line exactly as curl does; callers that don't are unaffected.
 F="$FAKE_DIR"
-url=""
-for a in "$@"; do case "$a" in https://*) url="$a";; esac; done
+url=""; want_code=0
+for a in "$@"; do
+  case "$a" in
+    https://*) url="$a";;
+    *'%{http_code}'*) want_code=1;;
+  esac
+done
+emit() { # <body> <status>
+  printf '%s' "$1"
+  [[ "$want_code" == 1 ]] && printf '\n%s' "$2"
+  exit 0
+}
 case "$url" in
   *registry.npmjs.org*)
     [[ -f "$F/npm_down" ]] && exit 22
-    printf '{"version":"%s"}' "$(cat "$F/npm_latest" 2>/dev/null || echo 0.1.6)" ;;
+    emit "$(printf '{"version":"%s"}' "$(cat "$F/npm_latest" 2>/dev/null || echo 0.1.6)")" 200 ;;
   *ghcr.io/token*)
     [[ -f "$F/ghcr_down" ]] && exit 22
-    printf '{"token":"faketoken"}' ;;
+    # A plain registry:2 (demo and matrix boxes) serves no token endpoint.
+    # Anonymous pull is expected there, so tags/list must still work.
+    [[ -f "$F/no_token_endpoint" ]] && exit 22
+    emit '{"token":"faketoken"}' 200 ;;
   *tags/list*)
-    [[ -f "$F/ghcr_down" ]] && exit 22
+    # curl itself fails: DNS, refused, timeout.
+    [[ -f "$F/ghcr_down" ]] && exit 7
+    [[ -f "$F/ghcr_denied" ]]   && emit '{"errors":[{"code":"UNAUTHORIZED"}]}' 403
+    [[ -f "$F/ghcr_notfound" ]] && emit '{"errors":[{"code":"NAME_UNKNOWN"}]}' 404
+    [[ -f "$F/ghcr_teapot" ]]   && emit '{"errors":[{"code":"WAT"}]}' 500
+    # Published, nothing released yet — a legitimate 200 with no tags.
+    [[ -f "$F/ghcr_empty" ]] && emit '{"tags":[]}' 200
     tags=$(cat "$F/ghcr_tags" 2>/dev/null || echo "1.0.0-beta.22 1.0.0-beta.25")
-    printf '{"tags":['; sep=""
-    for t in $tags; do printf '%s"%s"' "$sep" "$t"; sep=","; done
-    printf ']}' ;;
+    body=$(printf '{"tags":['; sep=""
+      for t in $tags; do printf '%s"%s"' "$sep" "$t"; sep=","; done
+      printf ']}')
+    emit "$body" 200 ;;
   *) exit 22 ;;
 esac
 exit 0
@@ -295,6 +319,42 @@ touch "$SANDBOX/fake/ghcr_down"
 OUT=$(run_console "3")
 check "says so without crashing" "$OUT" "cannot tell if you are up to date"
 check "still offers the menu"    "$OUT" "Quit"
+
+# The four ways "no tags came back" used to look identical. Each has a
+# different fix, so each has to say something different.
+scenario "Plain registry:2 with no token endpoint — anonymous still works"
+touch "$SANDBOX/fake/no_token_endpoint"
+OUT=$(run_console "3")
+check "reads tags anonymously"          "$OUT" "A newer Forge release is available"
+check "and resolves the newest one"     "$OUT" "1.0.0-beta.25"
+check_not "does not claim it is denied" "$OUT" "read:packages"
+check_not "does not claim unreachable"  "$OUT" "registry is unreachable"
+
+scenario "Registry denies the token — not reported as a missing release"
+touch "$SANDBOX/fake/ghcr_denied"
+OUT=$(run_console "3")
+check "names the real cause"          "$OUT" "no read:packages"
+check "gives the fix"                 "$OUT" "docker login ghcr.io"
+check_not "does not blame the network" "$OUT" "registry is unreachable"
+
+scenario "Package is not in this registry"
+touch "$SANDBOX/fake/ghcr_notfound"
+OUT=$(run_console "3")
+check "says it is not there"           "$OUT" "does not exist in this registry"
+check_not "does not blame the network" "$OUT" "registry is unreachable"
+
+scenario "Published, but nothing released yet"
+touch "$SANDBOX/fake/ghcr_empty"
+OUT=$(run_console "3")
+check "says nothing is released"       "$OUT" "has no released versions yet"
+check_not "does not blame permissions" "$OUT" "read:packages"
+check_not "does not blame the network" "$OUT" "registry is unreachable"
+
+scenario "Registry answers with something unexpected"
+touch "$SANDBOX/fake/ghcr_teapot"
+OUT=$(run_console "3")
+check "says the answer was unexpected" "$OUT" "unexpected answer"
+check "still offers the menu"          "$OUT" "Quit"
 
 scenario "npm registry unreachable — degrades quietly"
 touch "$SANDBOX/fake/npm_down"

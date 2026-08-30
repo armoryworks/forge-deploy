@@ -498,25 +498,70 @@ ghcr_basic_creds() {
 # List tags for a given image, following GHCR pagination so images with
 # 100+ tags (every build accumulates one) aren't truncated to the first
 # page. Returns one tag per line. Empty if none.
+# Tags for one repo on stdout. The RETURN CODE says why an empty answer is
+# empty: an unreachable registry, a token without read:packages, and a package
+# with nothing released yet are three different problems with three different
+# fixes, and collapsing them sends people to `docker login` for all three.
+#
+#   0  ok — zero tags is a legitimate answer (published, nothing released)
+#   1  registry unreachable — DNS, connection refused, timeout
+#   2  denied — no read:packages for this image, or bad credentials
+#   3  no such package in this registry
+#   4  the registry answered with something unexpected
+#
+# The code is the channel because every caller reads this through a command
+# substitution, which discards anything else the function might set.
 ghcr_list_tags() {
   local repo="$1" token page last="" all="" n=100
-  token=$(ghcr_token "$repo") || return 1
+  # ghcr_token deliberately succeeds when there is no token endpoint, so a
+  # plain registry:2 (the demo and matrix boxes) works anonymously.
+  token=$(ghcr_token "$repo")
   local -a auth=(); mapfile -t auth < <(registry_auth_args "$token")
   while :; do
     local url="${REGISTRY_SCHEME}://${REGISTRY_HOST}/v2/${REGISTRY_OWNER}/${repo}/tags/list?n=${n}"
     [[ -n "$last" ]] && url="${url}&last=${last}"
-    page=$(curl -fsSL --connect-timeout 10 --max-time "$REGISTRY_TIMEOUT" \
+    local resp rc=0 code body
+    # No -f: it collapses every HTTP status into one silent failure, which is
+    # precisely the distinction this function exists to make.
+    resp=$(curl -sSL --connect-timeout 10 --max-time "$REGISTRY_TIMEOUT" \
+      -w '\n%{http_code}' \
       "${auth[@]}" \
       -H "Accept: application/vnd.oci.image.index.v1+json" \
-      "$url" | jq -r '.tags[]?' 2>/dev/null || true)
+      "$url" 2>/dev/null) || rc=$?
+    (( rc != 0 )) && return 1
+    code="${resp##*$'\n'}"
+    body="${resp%$'\n'*}"
+    case "$code" in
+      200)     ;;
+      401|403) return 2 ;;
+      404)     return 3 ;;
+      *)       return 4 ;;
+    esac
+    page=$(printf '%s' "$body" | jq -r '.tags[]?' 2>/dev/null || true)
     [[ -z "$page" ]] && break
     all+="${page}"$'\n'
     local count
     count=$(printf '%s\n' "$page" | grep -c . || true)
     (( count < n )) && break
+    # A failure on page 2+ now returns instead of breaking. Breaking treated a
+    # truncated list as complete, which could offer an older tag as "newest".
     last=$(printf '%s\n' "$page" | tail -1)
   done
   printf '%s' "$all" | grep -v '^$' || true
+  return 0
+}
+
+# A ghcr_list_tags return code as one sentence naming both cause and fix.
+# rc 0 here means "reachable, but this component has nothing matching".
+ghcr_reason_text() {
+  local svc="$1" rc="$2"
+  case "$rc" in
+    0) printf "'%s' has no released versions yet" "$svc" ;;
+    1) printf "the registry is unreachable (check the network, or FORGE_REGISTRY_HOST if this box uses its own registry)" ;;
+    2) printf "this login has no read:packages for '%s' (docker login ghcr.io -u <github-username>, with a token that has read:packages)" "$svc" ;;
+    3) printf "'%s' does not exist in this registry" "$svc" ;;
+    *) printf "the registry gave an unexpected answer for '%s'" "$svc" ;;
+  esac
 }
 
 # Echo the manifest digest for a tag (the sha256:… that buildx assigns the
@@ -1909,11 +1954,12 @@ run_bootstrap() {
 }
 
 pin_newest() {
-  local svc="$1" repo newest
+  local svc="$1" repo newest raw lrc=0
   repo=$(service_repo "$svc")
-  newest=$(ghcr_list_tags "$repo" 2>/dev/null | grep -E "$TAG_RE_SEMVER" | sort -V | tail -1 || true)
+  raw=$(ghcr_list_tags "$repo" 2>/dev/null) || lrc=$?
+  newest=$(printf '%s\n' "$raw" | grep -E "$TAG_RE_SEMVER" | sort -V | tail -1 || true)
   if [[ -z "$newest" ]]; then
-    err "Couldn't list released versions for '$svc'. If the registry needs a login: docker login ghcr.io -u <your-github-username> (token with read:packages), then re-run: forge-deploy --recover"
+    err "Cannot pin a version for '$svc': $(ghcr_reason_text "$svc" "$lrc"). Then re-run: forge-deploy --recover"
     return 1
   fi
   env_set "$(service_envvar "$svc")" "$newest"
@@ -2531,7 +2577,7 @@ cmd_console() {
 
   printf '\n'
   if (( rc == 1 )); then
-    warn "Could not reach the release server, so I cannot tell if you are up to date."
+    warn "I cannot tell if you are up to date — $(ghcr_reason_text "$RESOLVE_FAILED_SVC" "$RESOLVE_FAILED_REASON")."
   elif (( rc == 2 )); then
     warn "No single release covers every part of this system yet."
   elif (( behind == 1 )); then
@@ -2700,9 +2746,12 @@ pick_tag_interactive() {
   local repo
   repo=$(service_repo "$svc_id")
   local tags
-  tags=$(ghcr_list_tags "$repo" 2>/dev/null | grep -E '^main-[a-f0-9]+$' | sort -r | head -5 || true)
+  local raw lrc=0
+  raw=$(ghcr_list_tags "$repo" 2>/dev/null) || lrc=$?
+  tags=$(printf '%s\n' "$raw" | grep -E '^main-[a-f0-9]+$' | sort -r | head -5 || true)
   if [[ -z "$tags" ]]; then
-    die "No main-<sha> tags available for $repo"
+    (( lrc == 0 )) && die "No main-<sha> tags available for $repo"
+    die "Cannot list tags for $repo: $(ghcr_reason_text "$svc_id" "$lrc")"
   fi
   printf '\nRecent builds for %s:\n' "$repo" >&2
   local i=1
@@ -3190,10 +3239,16 @@ resolve_newest_common() {
   local svc repo tags common=""
   RESOLVE_NEWEST=""
   RESOLVE_FAILED_SVC=""
+  RESOLVE_FAILED_REASON=0
   for svc in "$@"; do
     repo=$(service_repo "$svc")
-    tags=$(ghcr_list_tags "$repo" 2>/dev/null | grep -E "$TAG_RE_SEMVER" || true)
-    [[ -n "$tags" ]] || { RESOLVE_FAILED_SVC="$svc"; return 1; }
+    local raw lrc=0
+    raw=$(ghcr_list_tags "$repo" 2>/dev/null) || lrc=$?
+    if (( lrc != 0 )); then
+      RESOLVE_FAILED_SVC="$svc"; RESOLVE_FAILED_REASON="$lrc"; return 1
+    fi
+    tags=$(printf '%s\n' "$raw" | grep -E "$TAG_RE_SEMVER" || true)
+    [[ -n "$tags" ]] || { RESOLVE_FAILED_SVC="$svc"; RESOLVE_FAILED_REASON=0; return 1; }
     if [[ -z "$common" ]]; then
       common="$tags"
     else
@@ -3217,7 +3272,7 @@ cmd_update() {
 
   resolve_newest_common "${services[@]}" || rc=$?
   newest="$RESOLVE_NEWEST"
-  (( rc == 1 )) && die "No released versions came back for '${RESOLVE_FAILED_SVC}' — the registry is unreachable, this token has no read:packages for that image, or nothing has been released for it yet. If it is the first: docker login ghcr.io"
+  (( rc == 1 )) && die "Cannot work out the newest release: $(ghcr_reason_text "$RESOLVE_FAILED_SVC" "$RESOLVE_FAILED_REASON")"
   (( rc == 2 )) && die "No release tag is published for every component on this box"
 
   local out_of_date=()
