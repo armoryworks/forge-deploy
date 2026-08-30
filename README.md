@@ -96,7 +96,7 @@ install only matters if the bootstrapper itself changed.
 ## Requirements
 
 - **Docker** with the compose plugin (`docker compose`)
-- **Node.js 18+** (only to run this installer)
+- **Node.js 22+** (only to run this installer)
 - `bash` and `tar` on Linux or macOS; on Windows 10+ this installer calls
   `setup.ps1` via PowerShell automatically
 - 4 GB RAM minimum, 8 GB+ recommended — low-RAM systems get automatic

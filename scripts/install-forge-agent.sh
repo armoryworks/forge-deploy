@@ -38,7 +38,7 @@ BIND="${BIND:-172.17.0.1}"
 NODE_BIN="$(command -v node || true)"
 [[ -n "$NODE_BIN" ]] || { echo "Node.js is required: https://nodejs.org — then re-run." >&2; exit 1; }
 NODE_MAJOR="$("$NODE_BIN" -e 'console.log(process.versions.node.split(".")[0])')"
-(( NODE_MAJOR >= 18 )) || { echo "Node.js 18+ required (found $("$NODE_BIN" --version))." >&2; exit 1; }
+(( NODE_MAJOR >= 22 )) || { echo "Node.js 22+ required (found $("$NODE_BIN" --version))." >&2; exit 1; }
 
 # The panel and the agent both want :8484 — retire the panel first.
 if systemctl list-unit-files forge-panel.service >/dev/null 2>&1 \

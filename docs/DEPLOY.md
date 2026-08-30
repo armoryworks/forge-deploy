@@ -121,7 +121,7 @@ You should see `Login Succeeded`. The credential is written to `~/.docker/config
 
 The deploy scripts and compose configuration live in `forge-deploy`, not the application repo. Three equivalent ways to get it onto the host — all end at the same tree with the same `setup.sh`:
 
-**Option A — npx (one-shot, no Node knowledge needed beyond having Node 18+):**
+**Option A — npx (one-shot, no Node knowledge needed beyond having Node 22+):**
 
 ```bash
 sudo mkdir -p /opt/forge-deploy && sudo chown $USER:$USER /opt/forge-deploy

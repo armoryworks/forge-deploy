@@ -6,7 +6,7 @@
 #
 # Refreshes the deploy tooling from npm, then runs the gated deploy
 # (backup -> schema reconcile -> swap -> health check -> auto-rollback).
-# Safe to re-run. Requires: Node.js 18+ (npm/npx included), docker.
+# Safe to re-run. Requires: Node.js 22+ (npm/npx included), docker.
 set -euo pipefail
 
 # Run as a regular user — the script sudos only where needed. Under sudo,

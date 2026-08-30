@@ -2375,7 +2375,7 @@ console_latest_tooling() {
 console_apply_tooling_update() {
   if ! command -v npx >/dev/null 2>&1; then
     warn "Updating this tool needs Node.js, which is not installed here."
-    printf '    Install Node 18 or newer from https://nodejs.org, then run this again.\n\n'
+    printf '    Install Node 22 or newer from https://nodejs.org, then run this again.\n\n'
     return 1
   fi
   console_head "Updating the Forge tool"
