@@ -19,6 +19,10 @@
 
 set -uo pipefail
 cd "$(dirname "$0")" || exit 1
+DOCTOR_TREE="$(pwd)"
+readonly DOCTOR_TREE
+# shellcheck source=scripts/docker-probe.sh
+. "${DOCTOR_TREE}/scripts/docker-probe.sh"
 
 step()  { printf '\n\033[36m==> %s\033[0m\n' "$1"; }
 ok()    { printf '    \033[32m[OK] %s\033[0m\n' "$1"; }
@@ -35,13 +39,25 @@ CURL="curl -s --max-time 8"
 # ── 1. Stack health ─────────────────────────────────────────────────────────
 step "Checking the Forge stack"
 
-if ! command -v docker &>/dev/null; then
+DOCTOR_DOCKER_STATE="$(docker_state)"
+if [[ "$DOCTOR_DOCKER_STATE" == absent ]]; then
     fail "Docker is not installed (or not on PATH)."
-    action "Install Docker, then run ./setup.sh"
+    action "Install Docker, then run: cd ${DOCTOR_TREE} && ./setup.sh"
     STACK_UP=false
-elif ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^forge-ui$'; then
+elif [[ "$DOCTOR_DOCKER_STATE" == denied ]]; then
+    # Reported as "forge-ui is not running" before docker_state existed: the
+    # container list comes back empty when the socket is refused, which looks
+    # identical to a stopped stack and sends the operator to restart it.
+    fail "Docker is running, but this account cannot use it."
+    action "sudo usermod -aG docker \$USER, then log out and back in (or: newgrp docker)"
+    STACK_UP=false
+elif [[ "$DOCTOR_DOCKER_STATE" == stopped ]]; then
+    fail "The Docker daemon is not running."
+    action "sudo systemctl start docker"
+    STACK_UP=false
+elif ! grep -q '^forge-ui$' <<<"$(docker ps --format '{{.Names}}' 2>/dev/null || true)"; then
     fail "The forge-ui container is not running."
-    action "Start the stack: cd $(pwd) && ./setup.sh"
+    action "Start the stack: cd ${DOCTOR_TREE} && ./setup.sh"
     STACK_UP=false
 else
     STACK_UP=true

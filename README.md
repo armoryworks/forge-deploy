@@ -5,21 +5,47 @@ manufacturers and job shops — jobs, scheduling, inventory, purchasing,
 sales, quality, maintenance, and shop-floor kiosks, running entirely on
 your own hardware via Docker.
 
-This package is a thin bootstrapper. It downloads the current deploy tree
-from [armoryworks/forge-deploy](https://github.com/armoryworks/forge-deploy)
-and hands off to the setup script, which pulls prebuilt multi-arch images
-(amd64 + arm64) from GHCR and brings the stack up. You always get the
-latest deploy configuration — no waiting on an npm release.
+This package is a thin bootstrapper. It downloads a **pinned release** of the
+deploy tree from [armoryworks/forge-deploy](https://github.com/armoryworks/forge-deploy)
+and hands off to it. The tree pulls prebuilt multi-arch images (amd64 + arm64)
+from GHCR and brings the stack up. The tree is pinned to a tested tag, not to
+`main`, so the package version you run determines exactly what you get — and
+the tool tells you when a newer one is published.
 
-## Quick start
+## Already have Forge installed?
+
+One command, no arguments:
 
 ```bash
 npx @armoryworks/forge-deploy
 ```
 
-That fetches the deploy tree into `./forge-deploy` and runs interactive
-setup. It auto-detects platform, architecture, and available resources,
-and asks how you want to deploy (this machine only / LAN / public).
+Type it from anywhere — it finds the install on this machine rather than
+assuming a directory, and opens a guided console: what is installed, whether it
+is healthy, whether a newer release exists, and a short numbered menu —
+upgrade, repair, diagnose why it can't be reached, history, quit. If a newer
+installer is available it offers that first, applies it, and reopens itself.
+Every action that changes anything runs the same gated path (backup → schema
+reconcile → swap → health gate → automatic rollback), so nothing the menu can
+do skips a safeguard.
+
+## First install
+
+```bash
+npx @armoryworks/forge-deploy
+```
+
+On a machine with no Forge on it, the same command fetches the deploy tree into
+`./forge-deploy`, installs the `forge-deploy` CLI (one sudo prompt), and runs
+interactive setup. It auto-detects platform, architecture, and available
+resources, and asks how you want to deploy (this machine only / LAN / public).
+
+Afterwards there are two commands, and the second one is optional:
+
+```bash
+npx @armoryworks/forge-deploy    # from anywhere — finds the install, opens the console
+forge-deploy                     # the same console, once the CLI is on your PATH
+```
 
 Common variants:
 
@@ -99,22 +125,27 @@ script. The most useful flags:
 | `--doctor` | Diagnose instead of install: checks the stack, TLS, firewall, public IP, and probes reachability from the internet, then prints the exact next actions (including router port-forward rules) |
 | `--fetch-only` | (installer flag) Download the deploy tree but don't run setup |
 
+If your deploy tree lives somewhere unusual, `FORGE_DEPLOY_DIR=/path/to/tree`
+tells the bare command where to look.
+
 The full list is documented at the top of
 [`setup.sh`](https://github.com/armoryworks/forge-deploy/blob/main/setup.sh).
 
 ## Something not working?
 
-One command triages the whole install — stack health, HTTPS, firewall,
-public IP, router/NAT problems, and whether the internet can actually
-reach you — and ends with plain-language instructions for whatever it
-finds:
+The same one command. Open the console and pick *"Forge runs here but people
+cannot reach it — find out why"*:
 
 ```bash
-npx @armoryworks/forge-deploy --doctor
+npx @armoryworks/forge-deploy
 ```
 
-It changes nothing, asks nothing, and is safe to re-run until every
-check reads `[OK]`.
+It triages the whole install — stack health, HTTPS, firewall, public IP,
+router/NAT problems, and whether the internet can actually reach you — and ends
+with plain-language instructions for whatever it finds. It changes nothing and
+is safe to re-run until every check reads `[OK]`.
+
+`npx @armoryworks/forge-deploy --doctor` still runs it directly, for scripts.
 
 ## Updating
 

@@ -6,19 +6,57 @@
 # tested compose configuration.
 #
 # Triggers:
-#   - push of a v*.*.* tag -> create GitHub release with auto-generated notes
+#   - push of a v*.*.* tag -> verify the tagged tree, then create the release
+#   - workflow_dispatch    -> run the verification alone, against any ref
+#
+# The release job is GATED on `verify`. This workflow used to fire on the tag
+# alone: v0.8.1 was tagged before CI had reported and got a public release from
+# a tree whose suite was red. CI itself only runs on branch pushes, so waiting
+# for it would mean waiting on a run that need not exist for the tagged commit —
+# `verify` re-runs the checks against the exact tree being released instead.
 
 name: Release
 
 on:
   push:
     tags: ['v*.*.*']
+  workflow_dispatch:
 
 permissions:
   contents: write           # required to create the GitHub release
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose files
+        run: |
+          set -e
+          docker compose -f docker-compose.yml config --quiet
+          for overlay in docker-compose.cohost.yml docker-compose.dev.yml docker-compose.export.yml docker-compose.prod.yml; do
+            echo "Validating docker-compose.yml + $overlay"
+            docker compose -f docker-compose.yml -f "$overlay" config --quiet
+          done
+
+      - name: Console + installer behaviour tests
+        run: |
+          set -e
+          sudo apt-get install -y -qq jq >/dev/null 2>&1 || true
+          ./tools/test-console.sh
+          ./tools/test-install-discovery.sh
+
+      - name: First-install end-to-end (containerised)
+        env:
+          FORGE_DEPLOY_REF: ${{ startsWith(github.ref, 'refs/tags/') && format('tags/{0}', github.ref_name) || 'heads/main' }}
+        run: ./tools/test-install-e2e.sh
+
   release:
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 5
 

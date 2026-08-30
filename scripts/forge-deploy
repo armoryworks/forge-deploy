@@ -22,8 +22,34 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-readonly FORGE_DEPLOY_VERSION="0.6.1"
+readonly FORGE_DEPLOY_VERSION="0.8.9"
+# The copy installed at /usr/local/bin has no tree around it, so the default
+# stays /opt/forge-deploy. A copy still sitting in <tree>/scripts belongs to
+# that tree — resolving to it is what lets an install live anywhere else.
+if [[ -z "${FORGE_DEPLOY_REPO:-}" ]]; then
+  _self_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)" || _self_root=""
+  if [[ -n "$_self_root" && -f "${_self_root}/docker-compose.yml" && -f "${_self_root}/.env.example" ]]; then
+    FORGE_DEPLOY_REPO="$_self_root"
+  fi
+  unset _self_root
+fi
 readonly REPO_ROOT="${FORGE_DEPLOY_REPO:-/opt/forge-deploy}"
+# Docker reachability lives in one file so the pipefail trap that misread a
+# permission error as a stopped daemon cannot be reintroduced per-copy. Resolved
+# without calling out to dirname: this must work before PATH is trusted.
+_probe_dir="${BASH_SOURCE[0]%/*}"
+[[ "$_probe_dir" == "${BASH_SOURCE[0]}" ]] && _probe_dir="."
+# shellcheck source=scripts/docker-probe.sh
+if [[ -r "${REPO_ROOT}/scripts/docker-probe.sh" ]]; then
+  . "${REPO_ROOT}/scripts/docker-probe.sh"
+elif [[ -r "${_probe_dir}/docker-probe.sh" ]]; then
+  . "${_probe_dir}/docker-probe.sh"
+else
+  printf 'forge-deploy: scripts/docker-probe.sh is missing from %s — the deploy tree is incomplete.\n' \
+    "$REPO_ROOT" >&2
+  exit 1
+fi
+unset _probe_dir
 # Overridable so the whole deploy path can be exercised rootless — by the
 # test matrix here and by CI. Production leaves these unset and gets /etc/forge
 # and /var/log exactly as before.
@@ -135,11 +161,16 @@ USAGE:
   forge-deploy --setup --role <r>     Unattended setup (r = all|ui+api|api+db|ui|api|db)
                                         flags: --api-url <u> --db-host <h[:port]> --minio <h[:port]>
                                                --host <fqdn> --cert <p> --key <p>  (edge vhost)
-  forge-deploy                        No args: first run -> setup wizard; configured box -> pick a
-                                      version per component (Enter keeps current, r=re-setup, q=quit)
+  forge-deploy                        No args: the guided console. Reads the machine, reports in
+                                      plain language, offers a numbered menu (tool update if one is
+                                      available, upgrade, repair, history, quit). The whole
+                                      customer-facing surface — everything below is operator tooling.
+  forge-deploy --pick                 Per-component release picker (Enter keeps current, r=re-setup,
+                                      q=quit) — the old bare-invocation behaviour
   forge-deploy <tag>                  Deploy a specific tag to this box's components (or --service)
   forge-deploy <tag> --allow-destructive  Pre-approve destructive schema changes during reconcile
-                                      (skips the halt+enumerate; only with ENABLE_SCHEMA_RECONCILE=true)
+                                      (skips the halt+enumerate; only with ENABLE_SCHEMA_RECONCILE=true;
+                                       refused when SUPPORT_CONTACT is set in .env)
   forge-deploy --update               Update this box to the newest release shared by ALL of its
                                       components (exact same gated path as 'forge-deploy <tag>')
   forge-deploy --update --check       Report only — exit 0 = current, 10 = behind (cron/monitoring)
@@ -551,6 +582,21 @@ state_set() {
     "$STATE_FILE" > "$tmp"
   mv "$tmp" "$STATE_FILE"
   chmod 0640 "$STATE_FILE" 2>/dev/null || true
+  state_record_root
+}
+
+# The npm bootstrapper cannot find a tree that is not in a conventional
+# location, and a client running the bare command from $HOME must not be handed
+# a first-install wizard for a box that already runs Forge. Recording the root
+# here is what makes that lookup exact.
+state_record_root() {
+  local tmp current
+  [[ -f "$STATE_FILE" && -w "$STATE_FILE" ]] || return 0
+  current=$(jq -r '.box.repoRoot // ""' "$STATE_FILE" 2>/dev/null || echo "")
+  [[ "$current" == "$REPO_ROOT" ]] && return 0
+  tmp=$(mktemp)
+  jq --arg root "$REPO_ROOT" '.box = ((.box // {}) + {repoRoot: $root})' \
+    "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE" || rm -f "$tmp"
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -1580,7 +1626,9 @@ cmd_setup() {
 
   # 7. Record the role.
   local tmp; tmp=$(mktemp)
-  jq --arg r "$role" '.box = {role: $r, configuredAt: (now | todate)}' "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE" || rm -f "$tmp"
+  jq --arg r "$role" --arg root "$REPO_ROOT" \
+    '.box = ((.box // {}) + {role: $r, configuredAt: (now | todate), repoRoot: $root})' \
+    "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE" || rm -f "$tmp"
   printf '\n%s✓ Setup complete — this box is role "%s".%s\n' "${C_GREEN}${C_BOLD}" "$role" "${C_RESET}"
 }
 
@@ -1720,8 +1768,8 @@ bootstrap_scan() {
   ok "docker installed"
 
   # 2. Daemon running (and reachable by THIS user)?
-  if ! docker info >/dev/null 2>&1; then
-    if docker info 2>&1 | grep -qi "permission denied"; then
+  if [[ "$(docker_state)" != "ok" ]]; then
+    if [[ "$(docker_state)" == "denied" ]]; then
       scan_fatal "Docker is running but your user can't talk to it. Add yourself to the docker group — sudo usermod -aG docker \$USER — then log out and back in (or run 'newgrp docker'), and run: forge-deploy --recover"
     elif [[ "$(uname -s)" == "Linux" ]] && command -v systemctl >/dev/null 2>&1; then
       scan_heal daemon "Docker is installed but not running — will start it"
@@ -1889,7 +1937,13 @@ heal_up() {
 
 apply_heal() {
   case "$1" in
-    daemon)     sudo systemctl start docker ;;
+    daemon)
+      if [[ ! -t 0 ]] && ! sudo -n true 2>/dev/null; then
+        err "Starting Docker needs a password, and this is not an interactive terminal."
+        printf '      Run this yourself, then try again:  sudo systemctl start docker\n'
+        return 1
+      fi
+      sudo systemctl start docker ;;
     install)    sudo bash "${REPO_ROOT}/scripts/install-forge-deploy.sh" ;;
     bootstrap)  run_bootstrap ;;
     chown)      sudo chown -R "$(id -un):$(id -gn)" "$REPO_ROOT" ;;
@@ -1939,6 +1993,7 @@ cmd_recover() {
   require_cmd jq; require_cmd curl
   printf '\n%s== forge-deploy recovery ==%s\n' "${C_BOLD}${C_CYAN}" "${C_RESET}"
   local pass=1 asked=false
+  local -a HEAL_FAILED=()
   while (( pass <= 3 )); do
     bootstrap_scan
     trace "Doctor scan pass ${pass}: fixable=[${SCAN_HEAL[*]:-none}], needs-user=${#SCAN_FATAL[@]}."
@@ -1959,15 +2014,26 @@ cmd_recover() {
         q|Q) return 0 ;;
       esac
     fi
-    local h healed_all=true
+    local h healed_all=true progressed=false
     for h in "${SCAN_HEAL[@]}"; do
+      # A fix that failed on an earlier pass fails the same way on this one;
+      # re-running it only reprints the error, which is what turned one refused
+      # sudo into three identical walls of it.
+      if [[ " ${HEAL_FAILED[*]:-} " == *" $h "* ]]; then
+        trace "Auto-fix '$h': skipped, already failed this run."
+        healed_all=false
+        continue
+      fi
       if apply_heal "$h"; then
         trace "Auto-fix '$h': succeeded."
+        progressed=true
       else
         trace "Auto-fix '$h': FAILED."
+        HEAL_FAILED+=("$h")
         healed_all=false
       fi
     done
+    $progressed || break
     if ! $healed_all && (( pass == 3 )); then break; fi
     (( pass++ ))
   done
@@ -2121,6 +2187,434 @@ pick_component_version() {
 
 # Default bare `forge-deploy` on a CONFIGURED box: walk each component, pick a
 # version (Enter keeps current), deploy only the ones that changed.
+# ─────────────────────────────────────────────────────────────
+# Console — the entire customer-facing experience.
+#
+# `forge-deploy` with no arguments lands here. It reads the machine, says what
+# it found in plain language, and offers a short numbered menu whose first
+# entry is the right thing to do. Nothing here requires the operator to know a
+# flag, a version string, or how the deploy model works. Every action it can
+# take is the same gated path the flags drive, so the console cannot do
+# anything the CLI would not.
+# ─────────────────────────────────────────────────────────────
+
+CHOICE=""
+
+console_rule() { printf '  %s────────────────────────────────────────────────────────%s\n' "${C_DIM}" "${C_RESET}"; }
+console_head() { printf '\n  %s%s%s\n' "${C_BOLD}" "$1" "${C_RESET}"; console_rule; }
+
+console_friendly() {
+  case "$1" in
+    api)  printf 'Forge application' ;;
+    ui)   printf 'Web interface' ;;
+    test) printf 'Test harness' ;;
+    demo) printf 'Public demo' ;;
+    *)    printf '%s' "$1" ;;
+  esac
+}
+
+# One line per numbered option; sets CHOICE to the number picked. Returns 1 if
+# input closed (piped/EOF), so callers can fall back to printing instructions.
+console_menu() {
+  local prompt="$1"; shift
+  local i=1 opt
+  printf '\n'
+  for opt in "$@"; do
+    printf '    %s%d%s  %s\n' "${C_BOLD}" "$i" "${C_RESET}" "$opt"
+    i=$((i+1))
+  done
+  local max=$(( i - 1 )) reply tries=0
+  while :; do
+    printf '\n  %s [1-%d]: ' "$prompt" "$max"
+    if ! read -r reply; then printf '\n'; return 1; fi
+    if [[ "$reply" =~ ^[0-9]+$ ]] && (( reply >= 1 && reply <= max )); then
+      CHOICE="$reply"; printf '\n'; return 0
+    fi
+    tries=$(( tries + 1 ))
+    # Bounded rather than endless: a closed stdin or a stuck keyboard must not
+    # leave this spinning on a client's server.
+    if (( tries >= 3 )); then
+      printf '  %sNo valid choice given — leaving everything exactly as it is.%s\n' \
+        "${C_YELLOW}" "${C_RESET}"
+      return 1
+    fi
+    printf '  %sPlease type a number between 1 and %d.%s\n' "${C_YELLOW}" "$max" "${C_RESET}"
+  done
+}
+
+console_confirm() {
+  # console_confirm <word> <prompt>  — typed confirmation, empty input cancels.
+  local want="$1" prompt="$2" reply
+  printf '\n  %s [%s to continue, Enter to cancel]: ' "$prompt" "$want"
+  read -r reply || return 1
+  [[ "$reply" == "$want" ]]
+}
+
+# The first blocking problem with this machine, in the words we would use on
+# the phone — or empty if there is none. Order matters: each check assumes the
+# ones above it passed.
+console_machine_problem() {
+  if ! command -v docker >/dev/null 2>&1; then
+    printf 'Docker is not installed on this machine.'; return
+  fi
+  if [[ "$(docker_state)" != "ok" ]]; then
+    if [[ "$(docker_state)" == "denied" ]]; then
+      printf 'This account is not allowed to use Docker.'
+    else
+      printf 'Docker is installed but is not running.'
+    fi
+    return
+  fi
+  if ! docker compose version >/dev/null 2>&1; then
+    printf 'The Docker Compose plugin is missing.'; return
+  fi
+  if [[ ! -f "$ENV_FILE" ]]; then
+    printf 'Forge has not been set up on this machine yet.'; return
+  fi
+  if [[ ! -f "$STATE_FILE" ]]; then
+    printf 'The Forge deploy records are missing.'; return
+  fi
+}
+
+console_needs_root() {
+  [[ -f "$STATE_FILE" && ! -w "$STATE_FILE" ]] && return 0
+  [[ -f "$LOG_FILE"   && ! -w "$LOG_FILE"   ]] && return 0
+  return 1
+}
+
+console_health() {
+  local svc_id="$1" cid
+  cid=$(compose ps -q "$(service_compose "$svc_id")" 2>/dev/null || true)
+  if [[ -z "$cid" ]]; then printf 'not running'; return; fi
+  docker inspect --format \
+    '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{if .State.Running}}running{{else}}stopped{{end}}{{end}}' \
+    "$cid" 2>/dev/null || printf 'unknown'
+}
+
+# What the installer package would be if they fetched it today, and what they
+# actually have. The npm package IS the upgrade path, so this is the version
+# that matters — not the git tree. A failure to reach the registry is never
+# fatal; the console simply does not offer the update.
+console_installed_tooling() {
+  local stamp="${REPO_ROOT}/.installer-version"
+  if [[ -s "$stamp" ]]; then
+    tr -d '[:space:]' < "$stamp"
+    return 0
+  fi
+  # Tree fetched some other way (git clone): fall back to what it shipped with.
+  if [[ -f "${REPO_ROOT}/package.json" ]]; then
+    jq -r '.version // empty' "${REPO_ROOT}/package.json" 2>/dev/null
+  fi
+}
+
+console_latest_tooling() {
+  command -v curl >/dev/null 2>&1 || return 0
+  curl -fsSL --max-time 8 \
+    "https://registry.npmjs.org/@armoryworks%2fforge-deploy/latest" 2>/dev/null \
+    | jq -r '.version // empty' 2>/dev/null \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true
+}
+
+# Fetch the newest installer and hand straight back into the console.
+#
+# The exec is load-bearing and must come FIRST: bash reads a script file
+# incrementally, and the fetch overwrites the very file this function is
+# running from. Replacing this process with a fresh bash whose program text is
+# the -c string (held in memory, not on disk) means the overwrite cannot reach
+# the code that is still executing. Doing the fetch first and exec'ing after
+# would run the remaining statements out of a half-rewritten file.
+#
+# The cost of exec'ing first is that a failed download cannot return to the
+# menu — so that path explains itself and exits non-zero instead.
+console_apply_tooling_update() {
+  if ! command -v npx >/dev/null 2>&1; then
+    warn "Updating this tool needs Node.js, which is not installed here."
+    printf '    Install Node 18 or newer from https://nodejs.org, then run this again.\n\n'
+    return 1
+  fi
+  console_head "Updating the Forge tool"
+  printf '  Downloading the newest version, then reopening this menu.\n\n'
+  exec bash -c '
+    set -u
+    root="$1"
+    if ! npx --yes "@armoryworks/forge-deploy@latest" "$root" --fetch-only; then
+      printf "\n  The update could not be downloaded.\n"
+      printf "  Check this machine can reach the internet and try again.\n"
+      printf "  Nothing was changed — your Forge system is untouched.\n\n"
+      exit 1
+    fi
+    chmod +x "$root/scripts/forge-deploy" 2>/dev/null || true
+    # A download that reports success but leaves no runnable tool must not be
+    # handed to exec: bash would surface a raw "No such file or directory",
+    # which tells the operator nothing. (No apostrophes in here: this whole
+    # block is a single-quoted bash -c string.)
+    if [[ ! -x "$root/scripts/forge-deploy" ]]; then
+      printf "\n  The update downloaded, but the tool is not where it should be.\n"
+      printf "  Nothing was changed — your Forge system is untouched.\n"
+      printf "  Please send this message to your Forge support contact.\n\n"
+      exit 1
+    fi
+    printf "\n  Updated. Reopening...\n"
+    exec "$root/scripts/forge-deploy" --tool-is-current
+  ' _ "$REPO_ROOT"
+}
+
+console_show_state() {
+  local svc_id cur health label
+  printf '\n  %sWhat you have now%s\n' "${C_BOLD}" "${C_RESET}"
+  for svc_id in $(box_service_ids); do
+    cur=$(state_get "$(service_repo "$svc_id")" current 2>/dev/null || true)
+    health=$(console_health "$svc_id")
+    label=$(console_friendly "$svc_id")
+    local colour="${C_GREEN}"
+    case "$health" in
+      healthy|running) colour="${C_GREEN}" ;;
+      starting)        colour="${C_YELLOW}" ;;
+      *)               colour="${C_RED}" ;;
+    esac
+    printf '    %-22s %-18s %s%s%s\n' "$label" "${cur:-unknown}" "$colour" "$health" "${C_RESET}"
+  done
+}
+
+console_unhealthy_count() {
+  local svc_id health n=0
+  for svc_id in $(box_service_ids); do
+    health=$(console_health "$svc_id")
+    case "$health" in healthy|running) ;; *) n=$((n+1)) ;; esac
+  done
+  printf '%d' "$n"
+}
+
+console_do_upgrade() {
+  local target="$1"
+  console_head "Upgrading Forge to ${target}"
+  printf '  This will:\n'
+  printf '    · back up your database first\n'
+  printf '    · bring the database structure up to the new release\n'
+  printf '    · restart Forge on the new version\n'
+  printf '    · put the old version back automatically if it does not come up\n'
+  printf '\n  %sForge will be unavailable for roughly 3 to 10 minutes.%s\n' "${C_YELLOW}" "${C_RESET}"
+  if ! console_confirm YES "Start the upgrade?"; then
+    ok "Nothing was changed."
+    return 0
+  fi
+  local services=()
+  mapfile -t services < <(box_service_ids)
+  ensure_upgrade_env
+  env_set SCHEMA_IMAGE_TAG "$target"
+  EXPLICIT_TAG="$target"
+  if cmd_deploy "${services[@]}"; then
+    console_head "Upgrade complete"
+    console_show_state
+    printf '\n  %sOne last check only you can do:%s open Forge in a browser, log in,\n' "${C_BOLD}" "${C_RESET}"
+    printf '  and open one job. A healthy service means the application started —\n'
+    printf '  it does not prove your data came through.\n\n'
+    return 0
+  fi
+  console_head "The upgrade did not complete"
+  printf '  Forge has been put back on the version it was running before, and\n'
+  printf '  your data has not been changed.\n'
+  local support; support=$(support_contact)
+  if [[ -n "$support" ]]; then
+    printf '\n  Send what is above to %s.\n' "$support"
+  fi
+  printf '\n  You can also try the built-in repair: run this tool again and choose\n'
+  printf '  "Check this system for problems".\n\n'
+  return 1
+}
+
+# Reads only — no gate, no confirmation. Kept as a hand-off rather than a
+# reimplementation so there is one diagnosis to maintain, not two.
+console_run_doctor() {
+  console_head "Checking how this machine can be reached"
+  printf '  This only looks; it changes nothing.\n\n'
+  # `|| rc=$?`, not a bare call then `$?`: the doctor exits non-zero when it
+  # finds problems, and under `set -e` that would take the console down before
+  # the status could be read.
+  local rc=0
+  ( cd "$REPO_ROOT" && FORGE_DEPLOY_CALLER=1 bash ./doctor.sh ) || rc=$?
+  printf '\n'
+  if (( rc != 0 )); then
+    warn "The check found problems — the actions above are in the order to try them."
+  fi
+  return 0
+}
+
+cmd_console() {
+  console_head "Forge"
+
+  # ── helper programs ───────────────────────────────────────
+  # Checked before anything else, and handled separately from the problems
+  # below: every state read on this screen goes through jq, so without it the
+  # console cannot tell a configured box from an unconfigured one — it would
+  # read a working install as "never set up" and recommend the setup wizard.
+  # The repair path needs jq too, so there is nothing to offer but the install
+  # command. (Dropping preflight from this path is what removed the old
+  # guarantee that these exist.)
+  local dep
+  for dep in jq curl; do
+    if ! command -v "$dep" >/dev/null 2>&1; then
+      printf '\n  %sThis machine is missing a small program the Forge tooling needs: %s%s\n' \
+        "${C_YELLOW}" "$dep" "${C_RESET}"
+      printf '\n  Install it, then run this again:\n'
+      printf '      Ubuntu/Debian   sudo apt install -y %s\n' "$dep"
+      printf '      Fedora/RHEL     sudo dnf install -y %s\n' "$dep"
+      printf '      Alpine          sudo apk add %s\n\n' "$dep"
+      return 1
+    fi
+  done
+
+  state_record_root
+
+  # ── the machine itself ────────────────────────────────────
+  local problem; problem=$(console_machine_problem)
+  if [[ -n "$problem" ]]; then
+    printf '\n  %s%s%s\n' "${C_YELLOW}" "$problem" "${C_RESET}"
+    if [[ ! -t 0 ]]; then
+      printf '\n  Run: forge-deploy --recover\n\n'; return 1
+    fi
+    if console_menu "Choose" \
+        "Look at this properly and fix what can be fixed   (recommended)" \
+        "Quit — change nothing"; then
+      case "$CHOICE" in
+        1) RECOVERY_ENTRY="forge-deploy"; cmd_recover; return $? ;;
+        *) ok "Nothing was changed."; return 0 ;;
+      esac
+    fi
+    printf '\n  Run: forge-deploy --recover\n\n'; return 1
+  fi
+  printf '  %sThis machine is ready.%s\n' "${C_GREEN}" "${C_RESET}"
+
+  local configured_role=""
+  configured_role=$(jq -r '.box.role // ""' "$STATE_FILE" 2>/dev/null || echo "")
+  if [[ -z "$configured_role" ]]; then
+    printf '\n  %sThis machine has Forge installed but has not been told what it should run.%s\n' \
+      "${C_YELLOW}" "${C_RESET}"
+    if [[ ! -t 0 ]]; then
+      printf '\n  Run: forge-deploy --setup\n\n'; return 1
+    fi
+    if console_menu "Choose" \
+        "Finish setting this machine up   (recommended)" \
+        "Quit — change nothing"; then
+      case "$CHOICE" in
+        1) cmd_setup; return $? ;;
+        *) ok "Nothing was changed."; return 0 ;;
+      esac
+    fi
+    printf '\n'; return 0
+  fi
+
+  if console_needs_root; then
+    printf '\n  %sThis needs to run with administrator rights.%s\n' "${C_YELLOW}" "${C_RESET}"
+    printf '    Run it again like this:  sudo %s/scripts/forge-deploy\n\n' "$REPO_ROOT"
+    return 1
+  fi
+
+  console_show_state
+
+  # ── what is available ─────────────────────────────────────
+  local newest rc=0 sick tooling
+  local -a svcs=()
+  mapfile -t svcs < <(box_service_ids)
+  sick=$(console_unhealthy_count)
+  newest=$(resolve_newest_common "${svcs[@]}") || rc=$?
+
+  local behind=0 current_tag
+  if (( rc == 0 )); then
+    local svc_id
+    for svc_id in $(box_service_ids); do
+      current_tag=$(env_get "$(service_envvar "$svc_id")" | tr -d '[:space:]')
+      [[ "$current_tag" == "$newest" ]] || behind=1
+    done
+  fi
+
+  printf '\n'
+  if (( rc == 1 )); then
+    warn "Could not reach the release server, so I cannot tell if you are up to date."
+  elif (( rc == 2 )); then
+    warn "No single release covers every part of this system yet."
+  elif (( behind == 1 )); then
+    printf '  %sA newer Forge release is available:%s  %s%s%s\n' \
+      "${C_BOLD}" "${C_RESET}" "${C_CYAN}" "$newest" "${C_RESET}"
+  else
+    printf '  %sForge is up to date%s (%s)\n' "${C_GREEN}" "${C_RESET}" "$newest"
+  fi
+
+  tooling=""
+  if [[ "${TOOL_IS_CURRENT:-0}" != "1" ]]; then
+    local have_tool latest_tool
+    have_tool=$(console_installed_tooling)
+    latest_tool=$(console_latest_tooling)
+    if [[ -n "$have_tool" && -n "$latest_tool" && "$have_tool" != "$latest_tool" ]] \
+       && [[ "$(printf '%s\n%s\n' "$have_tool" "$latest_tool" | sort -V | tail -1)" == "$latest_tool" ]]; then
+      tooling="$latest_tool"
+      printf '  %sA newer version of this tool is available:%s  %s → %s\n' \
+        "${C_BOLD}" "${C_RESET}" "$have_tool" "$tooling"
+    fi
+  fi
+
+  if (( sick > 0 )); then
+    printf '\n  %s%d part(s) of your system are not healthy.%s\n' "${C_YELLOW}" "$sick" "${C_RESET}"
+  fi
+
+  # ── the menu ──────────────────────────────────────────────
+  if [[ ! -t 0 ]]; then
+    printf '\n  This is the guided view; it needs a terminal to ask you anything.\n'
+    (( behind == 1 )) && printf '  To upgrade without prompts: forge-deploy --update\n'
+    printf '\n'
+    return 0
+  fi
+
+  # Exactly one entry carries the recommendation, chosen by urgency: a stale
+  # tool first (it may already fix the rest), then anything unhealthy, then
+  # being behind. Built with plain ifs — a `$(cond && printf)` suffix returns
+  # non-zero when the condition is false and `set -e` takes the script down.
+  local recommend=""
+  if   [[ -n "$tooling" ]]; then recommend=tool
+  elif (( sick > 0 ));     then recommend=recover
+  elif (( behind == 1 ));  then recommend=upgrade
+  fi
+  local mark="   (recommended)" lbl
+
+  local -a opts=() acts=()
+  if [[ -n "$tooling" ]]; then
+    lbl="Update this tool first, then come straight back here"
+    if [[ "$recommend" == tool ]]; then lbl="${lbl}${mark}"; fi
+    opts+=("$lbl"); acts+=(tool)
+  fi
+  if (( sick > 0 )); then
+    lbl="Look at what is unhealthy and fix what can be fixed"
+    if [[ "$recommend" == recover ]]; then lbl="${lbl}${mark}"; fi
+    opts+=("$lbl"); acts+=(recover)
+  fi
+  if (( behind == 1 )); then
+    lbl="Upgrade Forge to ${newest}"
+    if [[ "$recommend" == upgrade ]]; then lbl="${lbl}${mark}"; fi
+    opts+=("$lbl"); acts+=(upgrade)
+  fi
+  opts+=("Check this machine and fix what can be fixed"); acts+=(recover)
+  # The reachability doctor was only ever reachable as ./doctor.sh or
+  # setup.sh --doctor, which is one more thing to remember than the console is
+  # allowed to cost. It changes nothing, so it is always safe to offer.
+  if [[ -x "${REPO_ROOT}/doctor.sh" ]]; then
+    opts+=("Forge runs here but people cannot reach it — find out why"); acts+=(doctor)
+  fi
+  opts+=("Show what has been deployed here before");  acts+=(logs)
+  opts+=("Quit — change nothing");                    acts+=(quit)
+
+  if ! console_menu "Choose" "${opts[@]}"; then
+    printf '\n'; return 0
+  fi
+  case "${acts[$((CHOICE-1))]}" in
+    tool)    console_apply_tooling_update ;;
+    upgrade) console_do_upgrade "$newest" ;;
+    recover) RECOVERY_ENTRY="forge-deploy"; cmd_recover ;;
+    doctor)  console_run_doctor ;;
+    logs)    cmd_logs ;;
+    quit)    ok "Nothing was changed." ;;
+  esac
+}
+
 cmd_update_interactive() {
   preflight
   printf '\n%sUpdate — %s%s\n' "${C_BOLD}" "$(box_scope_label)" "${C_RESET}"
@@ -2269,6 +2763,14 @@ reconcile_forge_db() {
   docker run --rm --network "$net" "$image" "$@" --db "$(reconcile_db_url)"
 }
 
+# A supported install records who approves destructive schema changes. Its
+# presence marks this box as customer-operated: the operator in front of it is
+# not the person who can decide what a DROP costs, so the bypass is withheld
+# rather than merely discouraged.
+support_contact() {
+  env_get SUPPORT_CONTACT | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
 # Pull destructive DDL out of a `forge-db plan` rendering and present it numbered
 # for the operator's disposition (the agreed ok-to-drop / can't-until / cannot form).
 enumerate_destructive() {
@@ -2281,7 +2783,12 @@ enumerate_destructive() {
     fi
   done <<< "$plan_text"
   (( n == 0 )) && printf '      (see the forge-db output above for the flagged statements)\n'
-  printf '\n      For each, reply: 1 - ok to delete / 2 - cannot until x,y,z / 3 - cannot delete\n'
+  local support; support=$(support_contact)
+  if [[ -n "$support" ]]; then
+    printf '\n      Send this list to %s — they decide what can be dropped.\n' "$support"
+  else
+    printf '\n      For each, reply: 1 - ok to delete / 2 - cannot until x,y,z / 3 - cannot delete\n'
+  fi
 }
 
 # Reconcile the live schema before the app swap. Returns 0 to proceed, 1 to abort.
@@ -2328,6 +2835,12 @@ reconcile_schema() {
   docker pull "$image" >/dev/null 2>&1 || true
 
   local allow="${ALLOW_DESTRUCTIVE:-false}" out rc=0
+  local support; support=$(support_contact)
+  if [[ "$allow" == "true" && -n "$support" ]]; then
+    err "--allow-destructive is not available on this install."
+    err "Destructive schema changes are approved by your Forge support contact: ${support}"
+    return 1
+  fi
   step "  Applying schema"
   out=$(reconcile_forge_db "$net" "$image" apply --env prod --yes --backup-taken 2>&1) || rc=$?
   printf '%s\n' "$out" | sed 's/^/      /'
@@ -2361,7 +2874,11 @@ reconcile_schema() {
     printf '\n'
     enumerate_destructive "$(reconcile_forge_db "$net" "$image" plan 2>&1 || true)"
     printf '\n'
-    err "Re-run the deploy with --allow-destructive once the items above are dispositioned."
+    if [[ -n "$support" ]]; then
+      err "Contact ${support} with the list above. Do not re-run until they have answered."
+    else
+      err "Re-run the deploy with --allow-destructive once the items above are dispositioned."
+    fi
     return 1
   fi
 
@@ -2659,8 +3176,29 @@ ensure_upgrade_env() {
   fi
 }
 
+# The newest released tag published for EVERY component this box runs. Prints
+# it on stdout; returns 1 if the registry is unreachable, 2 if no single
+# release covers every component. Callers that must abort turn that into a
+# die(); the console turns it into a sentence.
+resolve_newest_common() {
+  local svc repo tags common=""
+  for svc in "$@"; do
+    repo=$(service_repo "$svc")
+    tags=$(ghcr_list_tags "$repo" 2>/dev/null | grep -E "$TAG_RE_SEMVER" || true)
+    [[ -n "$tags" ]] || return 1
+    if [[ -z "$common" ]]; then
+      common="$tags"
+    else
+      common=$(comm -12 <(sort <<<"$common") <(sort <<<"$tags"))
+    fi
+  done
+  local newest; newest=$(sort -V <<<"$common" | tail -1)
+  [[ -n "$newest" ]] || return 2
+  printf '%s' "$newest"
+}
+
 cmd_update() {
-  local services=() svc repo tags common="" newest current
+  local services=() newest current rc=0
   mapfile -t services < <(box_service_ids)
   if (( ${#services[@]} == 0 )); then
     if [[ "$(env_get FORGE_DEPLOY_SERVICES | tr -d '[:space:]')" == "none" ]]; then
@@ -2669,18 +3207,9 @@ cmd_update() {
     die "No components configured on this box (run --setup first)"
   fi
 
-  for svc in "${services[@]}"; do
-    repo=$(service_repo "$svc")
-    tags=$(ghcr_list_tags "$repo" 2>/dev/null | grep -E "$TAG_RE_SEMVER" || true)
-    [[ -n "$tags" ]] || die "Couldn't list released versions for '$svc' — registry unreachable, or run: docker login ghcr.io"
-    if [[ -z "$common" ]]; then
-      common="$tags"
-    else
-      common=$(comm -12 <(sort <<<"$common") <(sort <<<"$tags"))
-    fi
-  done
-  newest=$(sort -V <<<"$common" | tail -1)
-  [[ -n "$newest" ]] || die "No release tag is published for every component on this box"
+  newest=$(resolve_newest_common "${services[@]}") || rc=$?
+  (( rc == 1 )) && die "Couldn't list released versions — registry unreachable, or run: docker login ghcr.io"
+  (( rc == 2 )) && die "No release tag is published for every component on this box"
 
   local out_of_date=()
   for svc in "${services[@]}"; do
@@ -2841,23 +3370,12 @@ parse_service_arg() {
 
 main() {
   if [[ $# -eq 0 ]]; then
-    # No args: never-bootstrapped box -> recovery doctor (detects the state,
-    #          runs first-time setup or resumes a broken one);
-    #          first run (no role yet) -> topology setup wizard;
-    #          configured box          -> per-component version picker.
-    if [[ ! -f "$ENV_FILE" || ! -f "$STATE_FILE" ]]; then
-      cmd_recover
-      return
-    fi
-    preflight
-    local configured_role=""
-    [[ -f "$STATE_FILE" ]] && configured_role=$(jq -r '.box.role // ""' "$STATE_FILE" 2>/dev/null || echo "")
-    if [[ -n "$configured_role" ]]; then
-      cmd_update_interactive
-    else
-      cmd_setup
-    fi
-    return
+    # No args is the guided console for every state of the box — never
+    # bootstrapped, set up but without a role, or fully configured. It does its
+    # own softer checks and offers the right next action as a menu item, so
+    # this must not pre-empt it with a preflight that can die().
+    cmd_console
+    return $?
   fi
 
   # `compose` subcommand: everything after it is passed verbatim to the
@@ -2910,6 +3428,8 @@ main() {
         if [[ $# -ge 2 && "$2" != --* ]]; then remote_api_val="$2"; shift 2; else shift; fi
         ;;
       --self-update)     mode="self-update"; shift ;;
+      --pick)            mode="pick"; shift ;;
+      --tool-is-current) TOOL_IS_CURRENT=1; shift ;;
       --recover|--doctor) mode="recover"; shift ;;
       --fresh-start)     mode="fresh-start"; shift ;;
       --service)
@@ -2972,6 +3492,10 @@ main() {
     self-update)
       cmd_self_update
       ;;
+    pick)
+      preflight
+      cmd_update_interactive
+      ;;
     recover)
       # Deliberately NO preflight — broken/incomplete states are the point.
       RECOVERY_ENTRY="forge-deploy --recover"
@@ -2990,14 +3514,14 @@ main() {
       cmd_reconcile "$positional"
       ;;
     "")
-      # No mode flag — deploy.
-      preflight
+      # Bare invocation is the guided console: it does its own, softer checks
+      # so a broken machine gets a plain-language menu instead of a die().
       if [[ -z "$positional" && -z "$service_arg" ]]; then
-        # Bare invocation on a configured box: per-component release picker
-        # (Enter keeps current); changes deploy through the gated path.
-        cmd_update_interactive
-        return 0
+        cmd_console
+        return $?
       fi
+      # No mode flag, but a tag or --service was given — deploy.
+      preflight
       local services svc_list
       if [[ -n "$service_arg" ]]; then
         # Command substitution, not process substitution: parse_service_arg's
