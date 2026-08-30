@@ -2517,7 +2517,8 @@ cmd_console() {
   local -a svcs=()
   mapfile -t svcs < <(box_service_ids)
   sick=$(console_unhealthy_count)
-  newest=$(resolve_newest_common "${svcs[@]}") || rc=$?
+  resolve_newest_common "${svcs[@]}" || rc=$?
+  newest="$RESOLVE_NEWEST"
 
   local behind=0 current_tag
   if (( rc == 0 )); then
@@ -3176,16 +3177,23 @@ ensure_upgrade_env() {
   fi
 }
 
-# The newest released tag published for EVERY component this box runs. Prints
-# it on stdout; returns 1 if the registry is unreachable, 2 if no single
-# release covers every component. Callers that must abort turn that into a
-# die(); the console turns it into a sentence.
+# The newest released tag published for EVERY component this box runs. Sets
+# RESOLVE_NEWEST; returns 1 if a component yielded no semver tags (which one is
+# in RESOLVE_FAILED_SVC), 2 if no single release covers every component.
+# Callers that must abort turn that into a die(); the console turns it into a
+# sentence.
+#
+# Results come back in globals rather than on stdout because the caller needs
+# more than one of them: a command substitution runs this in a subshell, where
+# anything but the printed tag is discarded on return.
 resolve_newest_common() {
   local svc repo tags common=""
+  RESOLVE_NEWEST=""
+  RESOLVE_FAILED_SVC=""
   for svc in "$@"; do
     repo=$(service_repo "$svc")
     tags=$(ghcr_list_tags "$repo" 2>/dev/null | grep -E "$TAG_RE_SEMVER" || true)
-    [[ -n "$tags" ]] || return 1
+    [[ -n "$tags" ]] || { RESOLVE_FAILED_SVC="$svc"; return 1; }
     if [[ -z "$common" ]]; then
       common="$tags"
     else
@@ -3194,7 +3202,7 @@ resolve_newest_common() {
   done
   local newest; newest=$(sort -V <<<"$common" | tail -1)
   [[ -n "$newest" ]] || return 2
-  printf '%s' "$newest"
+  RESOLVE_NEWEST="$newest"
 }
 
 cmd_update() {
@@ -3207,8 +3215,9 @@ cmd_update() {
     die "No components configured on this box (run --setup first)"
   fi
 
-  newest=$(resolve_newest_common "${services[@]}") || rc=$?
-  (( rc == 1 )) && die "Couldn't list released versions — registry unreachable, or run: docker login ghcr.io"
+  resolve_newest_common "${services[@]}" || rc=$?
+  newest="$RESOLVE_NEWEST"
+  (( rc == 1 )) && die "No released versions came back for '${RESOLVE_FAILED_SVC}' — the registry is unreachable, this token has no read:packages for that image, or nothing has been released for it yet. If it is the first: docker login ghcr.io"
   (( rc == 2 )) && die "No release tag is published for every component on this box"
 
   local out_of_date=()
