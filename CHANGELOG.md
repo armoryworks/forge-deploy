@@ -2,6 +2,41 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.11] - 2026-08-31
+
+The in-app upgrade path gets its executor, and the stack moves to Postgres 18.
+Tagged 0.8.11 rather than 0.8.10 because v0.8.10 was cut before this version
+constant was bumped, and a CLI that reports the wrong version during an upgrade
+window is worse than a skipped number.
+
+### Added
+
+- **A headless deploy agent (`agent/server.mjs`, `scripts/install-forge-agent.sh`).** forge-api calls it; it runs the gated deploy CLI. This is the executor half of upgrading an install from inside Forge — the API never gets the docker socket, because it is one of the containers an upgrade destroys and cannot supervise its own replacement. It replaces `forge-panel`: an existing panel install is stopped and its token reused, so a box that had the panel keeps working without a new secret. Requires Node 22+.
+
+- **Cross-box coordination, blue/green UI cutover, and an upgrade marker.** A split install upgrades in order — the box holding the agent forge-api can reach goes first, peers follow via `FORGE_PEER_AGENTS`. The marker file covers the window where the thing publishing progress is the thing being replaced.
+
+- **`Mobile__` env wiring and an optional `crash-reporting` compose profile** (GlitchTip) for the mobile app's crash reports.
+
+### Changed
+
+- **Postgres 17 → 18** across the compose files (`pgvector/pgvector:pg18`, and `postgres:18-alpine` for the crash DB). **Postgres 18 cannot read a 17 data directory** — it refuses to start rather than corrupting anything, but the stack stays down until you migrate. `docs/postgres-18-upgrade.md` is the dump/restore runbook; read §0 first, because the compose file must already pin 18 while the container still runs 17 or the upgrade is a clean-looking no-op.
+
+- **Node 22 is required in all nine places that assert a version**, not just `package.json` — two of them are runtime preflight guards in operator-facing installers.
+
+### Fixed
+
+- **A ui/api/db split migrated nothing and called it a success.** `reconcile_schema` skips on the api box (the DB is not on its compose network) and nothing on the db box could run it either, so a fully split install upgraded the API against an unmigrated database and reported success. `--reconcile` now runs where the database actually lives.
+
+- **The four registry failures were one silent failure.** `ghcr_list_tags` used `curl -f`, which collapses every HTTP status into one exit code; it now reads the status explicitly and returns 0 ok / 1 unreachable / 2 denied / 3 no such package / 4 unexpected, and `ghcr_reason_text` turns that into a sentence with both cause and fix. Three call sites were misdiagnosing, not one. With it went a latent bug: the pagination loop treated a failed page as end-of-list, so past 100 tags a mid-pagination failure could silently offer an older tag as "newest".
+
+- **A typo'd `--service` reported success without deploying anything.** `mapfile -t services < <(parse_service_arg ...)` swallowed `parse_service_arg`'s `die()`; `cmd_deploy` then looped zero times and printed "All targeted services deployed successfully" with exit 0 — a false success in the tool that drives client upgrades. The general rule this cost us twice: a bash function that must return more than one value cannot be called through a command substitution, because the subshell discards everything but stdout.
+
+- **The agent was never actually wired to forge-api on a real box** — `DEPLOY_AGENT_URL`/`DEPLOY_AGENT_TOKEN` are now written by the installer, and the agent binds the docker bridge gateway so a container can reach it without exposing it to the LAN.
+
+- **`pg_dump` must track the server major, or nothing can be backed up** — the backup sidecar now follows the server version instead of pinning its own.
+
+- **The upgrade lock missed the API-replacement window on a split install**, and `agent` now honours `FORGE_STATE_DIR` like the CLI does. Registry calls could also hang forever, and `--list` could crash; both now time out and fail with a reason.
+
 ## [0.8.9] - 2026-08-28
 
 Field install, second machine. Setup got as far as starting containers and then
