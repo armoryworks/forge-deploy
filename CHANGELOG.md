@@ -2,6 +2,19 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.12] - 2026-09-01
+
+The npm package catches up to the tree, and the Postgres 18 move gets the guard
+it shipped without.
+
+### Added
+
+- **A Postgres major-version guard on every deploy.** 0.8.11 pinned `pgvector/pgvector:pg18` while every box in the fleet was still on pg17. Postgres refuses to start against a data directory written by a different major, so the next deploy on any of them would not have upgraded the database — it would have stranded it, crash-looping until someone dumped, moved the volume aside and restored by hand. Nothing detected this: there was no server-major check in the CLI, the doctor or `forge-upgrade.sh`. `check_pg_major` now runs at the top of `cmd_deploy`, before any image is swapped, comparing the compose pin against the image the running db container was started from. It stays quiet where it has no opinion — ui-only and remote-db boxes have no local db container, a fresh box has no server yet. `SKIP_PG_MAJOR_CHECK=true` for a deliberate migration.
+
+### Changed
+
+- **The npm package now installs the tree that has the agent.** `@armoryworks/forge-deploy` 0.1.16 pins `v0.8.12`; it had been pinned to `v0.8.9`, which predates `agent/server.mjs` entirely — so `npx @armoryworks/forge-deploy` could not install the agent, and the in-app Updates screen (forge-api/forge-ui v1.0.0-beta.26) had nothing to call. 0.8.11 bumped the CLI version and this changelog but not `package.json` or the pinned tag.
+
 ## [0.8.11] - 2026-08-31
 
 The in-app upgrade path gets its executor, and the stack moves to Postgres 18.
