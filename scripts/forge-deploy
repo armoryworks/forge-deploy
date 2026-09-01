@@ -3332,6 +3332,46 @@ cmd_reconcile() {
   ok "Schema reconcile complete"
 }
 
+# ─────────────────────────────────────────────────────────────
+# Postgres major-version guard
+# ─────────────────────────────────────────────────────────────
+# Postgres refuses to start against a data directory written by a different
+# major. So when the compose pin moves ahead of the server actually running, a
+# deploy does not upgrade the database — it strands it, and the stack stays
+# down until someone migrates by hand. Catch it while the old server is still
+# up and every choice is still reversible.
+
+pg_pinned_major() {
+  sed -n 's|.*image:[[:space:]]*pgvector/pgvector:pg\([0-9][0-9]*\).*|\1|p' \
+    "$COMPOSE_BASE" 2>/dev/null | head -1
+}
+
+pg_running_major() {
+  local cid img
+  cid=$(compose ps -q forge 2>/dev/null | head -1)
+  [[ -n "$cid" ]] || return 0
+  img=$(docker inspect "$cid" --format '{{.Config.Image}}' 2>/dev/null) || return 0
+  printf '%s\n' "$img" | sed -n 's|.*:pg\([0-9][0-9]*\).*|\1|p' | head -1
+}
+
+check_pg_major() {
+  [[ "${SKIP_PG_MAJOR_CHECK:-}" == "true" ]] && return 0
+  local pinned running
+  pinned=$(pg_pinned_major)
+  running=$(pg_running_major)
+  # Nothing to compare: a box with no database of its own (ui-only, remote-db),
+  # a server that is not up yet, or a compose file that pins no pgvector image.
+  [[ -n "$pinned" && -n "$running" ]] || return 0
+  [[ "$pinned" == "$running" ]] && return 0
+  err "Postgres major mismatch — refusing to deploy."
+  err "  running server: pg${running}     compose pins: pg${pinned}"
+  err "Postgres ${pinned} cannot read a pg${running} data directory, so this deploy"
+  err "would take the database down and leave it down until it is migrated."
+  err "Migrate first — see docs/postgres-18-upgrade.md (dump on the old server,"
+  err "move the volume aside, restore). Override with SKIP_PG_MAJOR_CHECK=true."
+  exit 1
+}
+
 cmd_deploy() {
   local target_services=("$@")  # space-separated svc_ids
   local explicit_tag="${EXPLICIT_TAG:-}"
@@ -3340,6 +3380,10 @@ cmd_deploy() {
   # bug that empties the list reports "All targeted services deployed
   # successfully" and exits 0 — a silent no-op that reads as a green upgrade.
   (( ${#target_services[@]} )) || die "No services targeted — nothing to deploy (check --service and FORGE_DEPLOY_SERVICES)"
+
+  # Before any image is swapped: a compose pin that has moved past the running
+  # server strands the database rather than upgrading it.
+  check_pg_major
 
   local svc_id
   local failed=0
