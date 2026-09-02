@@ -44,6 +44,12 @@ case "$1" in
       fi
     done
     exit 0 ;;
+  images)
+    [[ -f "$F/images" ]] && cat "$F/images"
+    exit 0 ;;
+  ps)
+    [[ -f "$F/running_images" ]] && cat "$F/running_images"
+    exit 0 ;;
   inspect)
     cid="${*: -1}"
     svc="${cid#cid-}"
@@ -404,6 +410,29 @@ else
   check_not "the console did not die" "$OUT" "unbound variable"
 fi
 
+scenario "Superseded images are offered as a plain menu choice"
+printf '{"forge-api":{"current":"1.0.0-beta.25","prior":"1.0.0-beta.24"},"box":{"role":"all"}}' \
+  > "$SANDBOX/state/deploy-state.json"
+printf 'ghcr.io/armoryworks/forge-api:1.0.0-beta.25\n' > "$SANDBOX/fake/running_images"
+cat > "$SANDBOX/fake/images" <<'IMG'
+ghcr.io/armoryworks/forge-api:1.0.0-beta.25
+ghcr.io/armoryworks/forge-api:1.0.0-beta.24
+ghcr.io/armoryworks/forge-api:1.0.0-beta.20
+ghcr.io/armoryworks/forge-api:1.0.0-beta.2
+ghcr.io/armoryworks/forge-ui:1.0.0-beta.19
+IMG
+OUT=$(run_console "")
+check "offers the cleanup"       "$OUT" "Free up disk"
+# beta.25 is running and beta.24 is the rollback target, so three of the five go.
+check "counts only the stale"    "$OUT" "remove 3 superseded"
+check_not "not recommended"      "$OUT" "Free up disk — remove 3 superseded Forge image(s)   (recommended)"
+
+scenario "A box with no recorded versions refuses to prune"
+printf '{"box":{"role":"all"}}' > "$SANDBOX/state/deploy-state.json"
+OUT=$(run_console "")
+check_not "no cleanup offered"   "$OUT" "Free up disk"
+
+reset_fake
 scenario "Quit changes nothing"
 OUT=$(run_console "$(menu_number "$(run_console "")" "Quit")")
 check "says nothing changed" "$OUT" "Nothing was changed."

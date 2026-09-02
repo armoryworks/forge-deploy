@@ -2,6 +2,21 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.13] - 2026-09-01
+
+Disk reclamation becomes a menu choice instead of a script somebody has to be
+handed.
+
+### Added
+
+- **"Free up disk — remove N superseded Forge image(s)" in the guided console**, plus `forge-deploy --prune-images`. A box keeps every image it has ever run — ap was holding 123 images and 41GB with six in use. The choice only appears when there is something to reclaim, is labelled with the count so it explains itself, and is never the recommendation: it is housekeeping, not urgency.
+
+  What survives is deliberately more than what is running. `--rollback` re-pins to the **prior** tag, so pruning that turns a rollback into a re-pull from GHCR at the one moment you want no network dependency. The forge-db image is not in `deploy-state.json` at all — `SCHEMA_IMAGE_TAG` pins it and reconcile needs it. Both are held.
+
+  A box with no recorded versions **refuses to prune** rather than guessing: without them the keep-set collapses to "whatever happens to be running", which deletes the rollback target. Found on a real box whose stack had been brought up outside `cmd_deploy`.
+
+  Matching on the keep-set is whole-line (`grep -vxFf`). Fixed-string matching alone is a substring match, so a kept `:1.0.0-beta.2` silently shields — and then deletes — `:1.0.0-beta.24`. The console suite covers that case directly.
+
 ## [0.8.12] - 2026-09-01
 
 The npm package catches up to the tree, and the Postgres 18 move gets the guard

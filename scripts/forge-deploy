@@ -22,7 +22,7 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-readonly FORGE_DEPLOY_VERSION="0.8.12"
+readonly FORGE_DEPLOY_VERSION="0.8.13"
 # The copy installed at /usr/local/bin has no tree around it, so the default
 # stays /opt/forge-deploy. A copy still sitting in <tree>/scripts belongs to
 # that tree — resolving to it is what lets an install live anywhere else.
@@ -197,6 +197,7 @@ USAGE:
                                       api box skips the reconcile because the DB is elsewhere.
   forge-deploy --logs                 Tail the deploy history log
   forge-deploy --self-update          git pull forge-deploy + reinstall
+  forge-deploy --prune-images         remove superseded images (keeps running + rollback tags)
   forge-deploy --recover              Doctor: detect common failure modes / an incomplete
                                       setup, then fix-and-resume in place (keeps your data)
   forge-deploy --fresh-start          Wipe EVERYTHING on this box (containers, database,
@@ -2646,6 +2647,13 @@ cmd_console() {
   if [[ -x "${REPO_ROOT}/doctor.sh" ]]; then
     opts+=("Forge runs here but people cannot reach it — find out why"); acts+=(doctor)
   fi
+  # Housekeeping, never recommended: offered only when there is something to
+  # reclaim, and labelled with the count so the choice explains itself.
+  local reclaim
+  reclaim=$(superseded_images | wc -l | tr -d '[:space:]')
+  if (( reclaim > 0 )); then
+    opts+=("Free up disk — remove ${reclaim} superseded Forge image(s)"); acts+=(prune)
+  fi
   opts+=("Show what has been deployed here before");  acts+=(logs)
   opts+=("Quit — change nothing");                    acts+=(quit)
 
@@ -2657,6 +2665,7 @@ cmd_console() {
     upgrade) console_do_upgrade "$newest" ;;
     recover) RECOVERY_ENTRY="forge-deploy"; cmd_recover ;;
     doctor)  console_run_doctor ;;
+    prune)   cmd_prune_images ;;
     logs)    cmd_logs ;;
     quit)    ok "Nothing was changed." ;;
   esac
@@ -3333,6 +3342,71 @@ cmd_reconcile() {
 }
 
 # ─────────────────────────────────────────────────────────────
+# Superseded image cleanup
+# ─────────────────────────────────────────────────────────────
+# A box keeps every image it has ever run — a hundred tags and tens of GB after
+# a handful of upgrades. What has to survive is more than what is running:
+# --rollback re-pins to the PRIOR tag, so pruning that turns a rollback into a
+# re-pull from GHCR at the one moment you want no network dependency. forge-db
+# is not in deploy-state.json at all — SCHEMA_IMAGE_TAG pins it, and reconcile
+# needs it.
+
+image_keep_set() {
+  docker ps -a --format '{{.Image}}' 2>/dev/null || true
+  jq -r 'to_entries[]
+         | select(.value.current? // empty)
+         | "ghcr.io/armoryworks/\(.key):\(.value.current)",
+           "ghcr.io/armoryworks/\(.key):\(.value.prior)"' \
+     "$STATE_FILE" 2>/dev/null | grep -v ':$' || true
+  local schema_tag
+  schema_tag=$(env_get SCHEMA_IMAGE_TAG 2>/dev/null | tr -d '[:space:]')
+  [[ -n "$schema_tag" ]] && printf 'ghcr.io/armoryworks/forge-db:%s\n' "$schema_tag"
+  return 0
+}
+
+# The -x is load-bearing: -F alone still matches substrings, so a keep entry of
+# ':1.0.0-beta.2' would shield — and then delete — ':1.0.0-beta.24'.
+superseded_images() {
+  local keep
+  keep=$(mktemp)
+  image_keep_set | sort -u >"$keep"
+  docker images 'ghcr.io/armoryworks/*' --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
+    | grep -v ':<none>$' | grep -vxFf "$keep" || true
+  rm -f "$keep"
+}
+
+cmd_prune_images() {
+  step "Reclaim disk from superseded Forge images"
+  # Without recorded versions there is no way to tell a rollback target from a
+  # leftover, and the keep-set collapses to "whatever happens to be running" —
+  # which prunes the image a rollback needs. Refuse rather than guess.
+  if ! jq -e '[to_entries[] | select((.value.current? // "") != "")] | length > 0' \
+       "$STATE_FILE" >/dev/null 2>&1; then
+    warn "No deployed versions are recorded on this box, so a rollback target cannot be"
+    warn "told apart from a leftover. Deploy through forge-deploy once, then try again."
+    return 0
+  fi
+  local -a gone=()
+  mapfile -t gone < <(superseded_images)
+  if (( ${#gone[@]} == 0 )); then
+    ok "Nothing to reclaim — every Forge image here is in use or is a rollback target."
+    return 0
+  fi
+  printf '\n  Kept (running, rollback target, or the schema image):\n'
+  image_keep_set | sort -u | sed 's/^/      /'
+  printf '\n  Removed (%d):\n' "${#gone[@]}"
+  printf '      %s\n' "${gone[@]}"
+  if [[ -t 0 ]]; then
+    console_confirm REMOVE "Remove ${#gone[@]} superseded image(s)?" \
+      || { ok "Nothing was changed."; return 0; }
+  fi
+  printf '%s\n' "${gone[@]}" | xargs -r docker rmi >/dev/null 2>&1 || true
+  docker image prune -f >/dev/null 2>&1 || true
+  docker builder prune -f >/dev/null 2>&1 || true
+  ok "Removed ${#gone[@]} image(s); dangling layers and build cache cleared."
+}
+
+# ─────────────────────────────────────────────────────────────
 # Postgres major-version guard
 # ─────────────────────────────────────────────────────────────
 # Postgres refuses to start against a data directory written by a different
@@ -3536,6 +3610,7 @@ main() {
         if [[ $# -ge 2 && "$2" != --* ]]; then remote_api_val="$2"; shift 2; else shift; fi
         ;;
       --self-update)     mode="self-update"; shift ;;
+      --prune-images)    mode="prune-images"; shift ;;
       --pick)            mode="pick"; shift ;;
       --tool-is-current) TOOL_IS_CURRENT=1; shift ;;
       --recover|--doctor) mode="recover"; shift ;;
@@ -3596,6 +3671,9 @@ main() {
       ;;
     remote-api)
       cmd_remote_api "$remote_api_val"
+      ;;
+    prune-images)
+      cmd_prune_images
       ;;
     self-update)
       cmd_self_update
