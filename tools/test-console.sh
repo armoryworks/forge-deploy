@@ -433,6 +433,12 @@ OUT=$(run_console "")
 check_not "no cleanup offered"   "$OUT" "Free up disk"
 
 reset_fake
+scenario "Starting over is offered, but never recommended"
+OUT=$(run_console "")
+check "offers a clean slate"     "$OUT" "Start over"
+check "says what it does"        "$OUT" "erase everything on this box"
+check_not "never recommended"    "$OUT" "set it up fresh   (recommended)"
+
 scenario "Quit changes nothing"
 OUT=$(run_console "$(menu_number "$(run_console "")" "Quit")")
 check "says nothing changed" "$OUT" "Nothing was changed."

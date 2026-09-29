@@ -2117,16 +2117,57 @@ cmd_recover() {
 
 # Destructive reset: containers, volumes (database + uploaded files), and
 # generated config — then a from-scratch setup. Typed confirmation required.
+fresh_start_inventory() {
+  local tables rows vols v size
+  tables=$(pg_table_count 2>/dev/null || true)
+  if [[ -n "$tables" && "$tables" != "0" ]]; then
+    rows=$(compose exec -T forge psql -U "$(pg_env_user)" -d "$(pg_env_db)" -tAc \
+      "select coalesce(sum(n_live_tup),0) from pg_stat_user_tables" 2>/dev/null | tr -d '[:space:]')
+    printf '      the database — %s tables, about %s rows\n' "$tables" "${rows:-unknown}"
+  else
+    printf '      the database (could not read it; it may already be down)\n'
+  fi
+  mapfile -t vols < <(docker volume ls -q --filter "name=$(basename "$REPO_ROOT")" 2>/dev/null || true)
+  for v in "${vols[@]}"; do
+    [[ -n "$v" ]] || continue
+    size=$(docker run --rm -v "${v}:/v" alpine du -sh /v 2>/dev/null | awk '{print $1}')
+    printf '      %s  %s\n' "$v" "${size:-?}"
+  done
+}
+
+fresh_start_backup() {
+  local dump
+  mkdir -p "${REPO_ROOT}/.local-changes"
+  dump="${REPO_ROOT}/.local-changes/before-fresh-start-$(date +%Y%m%d-%H%M%S).dump"
+  if compose exec -T forge pg_dump -U "$(pg_env_user)" -d "$(pg_env_db)" \
+     --format=custom --compress=9 >"$dump" 2>/dev/null && [[ -s "$dump" ]]; then
+    ok "Saved a copy of the database: $dump"
+    return 0
+  fi
+  rm -f "$dump"
+  warn "Could not save a copy — the database may already be down."
+  return 1
+}
+
 cmd_fresh_start() {
   [[ -t 0 ]] || die "--fresh-start needs an interactive terminal (it requires typed confirmation)"
-  printf '\n%s== FRESH START — this deletes data ==%s\n' "${C_BOLD}${C_RED}" "${C_RESET}"
-  warn "This permanently removes on THIS box:"
-  warn "  - all Forge containers"
-  warn "  - the database and every uploaded file (volumes: pgdata, miniodata, …)"
-  warn "  - generated config (.env, certs/, compose overrides, box scope)"
-  printf 'Type FRESH to confirm (anything else aborts): '
+  printf '\n%s== START OVER — THIS ERASES EVERYTHING ON THIS BOX ==%s\n\n' "${C_BOLD}${C_RED}" "${C_RESET}"
+  printf '  Forge will be wiped and set up again from scratch. This cannot be undone\n'
+  printf '  from inside Forge. What goes:\n\n'
+  fresh_start_inventory
+  printf '\n      every uploaded file and document\n'
+  printf '      this box%s settings (.env, certificates, overrides)\n\n' "'"
+
+  if console_confirm COPY "Save a copy of the database first?"; then
+    fresh_start_backup || true
+  else
+    warn "No copy will be kept."
+  fi
+
+  printf '\n  %sThere is no undo after this point.%s\n' "${C_BOLD}${C_RED}" "${C_RESET}"
+  printf 'Type ERASE to wipe this box and set it up fresh (anything else stops): '
   local c; read -r c
-  [[ "$c" == "FRESH" ]] || { warn "Aborted — nothing was changed."; return 1; }
+  [[ "$c" == "ERASE" ]] || { warn "Stopped — nothing was changed."; return 1; }
 
   step "Tearing down"
   if [[ -f "$ENV_FILE" ]]; then
@@ -2673,6 +2714,7 @@ cmd_console() {
     opts+=("Free up disk — remove ${reclaim} superseded Forge image(s)"); acts+=(prune)
   fi
   opts+=("Show what has been deployed here before");  acts+=(logs)
+  opts+=("Start over — erase everything on this box and set it up fresh"); acts+=(fresh)
   opts+=("Quit — change nothing");                    acts+=(quit)
 
   if ! console_menu "Choose" "${opts[@]}"; then
@@ -2684,6 +2726,7 @@ cmd_console() {
     recover) RECOVERY_ENTRY="forge-deploy"; cmd_recover ;;
     doctor)  console_run_doctor ;;
     prune)   cmd_prune_images ;;
+    fresh)   RECOVERY_ENTRY="forge-deploy"; cmd_fresh_start ;;
     logs)    cmd_logs ;;
     quit)    ok "Nothing was changed." ;;
   esac

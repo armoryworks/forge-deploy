@@ -12,6 +12,10 @@ The database version upgrade stops being a runbook.
 
   Verified end to end against a live pgvector stack: pg17 with data and the `vector` extension, upgraded to pg18, rows and extensions intact, old volume retained.
 
+- **"Start over — erase everything on this box and set it up fresh" is now a console choice.** `--fresh-start` has existed for a while, but it was reachable only from `--help` or from error text after something had already gone wrong, so the operator running the bare command never saw it. It now sits last in the menu and is never marked recommended.
+
+  Its confirmation was also ritual rather than informed — it named volumes abstractly and asked for a typed word. It now **counts what will actually be lost** (tables, approximate rows, each volume with its size), **offers to save a copy of the database first**, and then asks for a typed `ERASE`. Seeing "47 tables, about 120,000 rows" before typing is the difference between a confirmation and a formality.
+
 - **`forge-deploy --pg-rollback <volume>`** puts a kept pre-upgrade database back, and says plainly that the compose pin still expects the newer version.
 
 ### Changed
