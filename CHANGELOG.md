@@ -2,6 +2,23 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.14] - 2026-09-29
+
+A client tried to update his own install and hit a wall with nothing written on
+it. This is that wall, rebuilt as a door.
+
+### Fixed
+
+- **`--self-update` told an operator what was wrong and nothing about what to do.** The whole message was `Local changes to tracked files present in /opt/forge-deploy — refusing to pull`. It did not say which files, did not show what changed, and offered no way forward — so the only move left was to message someone and wait, which is exactly what happened. It now names the files with a diffstat, says plainly that this is usually a hand-applied fix worth looking at, and offers the three real choices: inspect the diff, `--keep-local` (stash, pull, re-apply on top), or `--discard-local`. **Both paths snapshot the edits first** to `.local-changes/<timestamp>/`, as the files themselves and as an applyable patch.
+
+  When a kept edit clashes with the update, the tree is reset to the clean upstream state rather than left holding conflict markers. A half-merged `docker-compose.yml` does not parse, so the old behaviour would have traded a blocked update for a stack that could not start.
+
+- **The console's "Update this tool" silently destroyed hand edits.** It fetches the release tarball and extracts it over the tree, so any operator change was overwritten with no warning and no copy — strictly worse than the `--self-update` refusal, and the option a first-time operator is likelier to pick. It now detects local edits, shows them, takes a snapshot, and requires a typed confirmation before replacing them.
+
+### Added
+
+- **`tools/test-self-update.sh`** — 21 assertions over a real git remote covering all four paths (clean update, blocked, kept, kept-with-clash, discarded), including that a clash leaves a parseable compose file. No docker or network needed. Wired into CI.
+
 ## [0.8.13] - 2026-09-01
 
 Disk reclamation becomes a menu choice instead of a script somebody has to be

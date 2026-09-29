@@ -26,6 +26,8 @@ node_modules/
 tools/*.csx
 tools/*.sql
 
+.local-changes/
+
 # OS junk
 .DS_Store
 Thumbs.db

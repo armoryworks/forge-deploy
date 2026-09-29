@@ -56,6 +56,7 @@ jobs:
           sudo apt-get install -y -qq jq >/dev/null 2>&1 || true
           ./tools/test-console.sh
           ./tools/test-install-discovery.sh
+          ./tools/test-self-update.sh
 
       - name: First-install end-to-end (containerised)
         if: github.event_name == 'push'

@@ -22,7 +22,7 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-readonly FORGE_DEPLOY_VERSION="0.8.13"
+readonly FORGE_DEPLOY_VERSION="0.8.14"
 # The copy installed at /usr/local/bin has no tree around it, so the default
 # stays /opt/forge-deploy. A copy still sitting in <tree>/scripts belongs to
 # that tree — resolving to it is what lets an install live anywhere else.
@@ -197,6 +197,8 @@ USAGE:
                                       api box skips the reconcile because the DB is elsewhere.
   forge-deploy --logs                 Tail the deploy history log
   forge-deploy --self-update          git pull forge-deploy + reinstall
+  forge-deploy --self-update --keep-local     update, re-applying local edits on top
+  forge-deploy --self-update --discard-local  update, throwing local edits away
   forge-deploy --prune-images         remove superseded images (keeps running + rollback tags)
   forge-deploy --recover              Doctor: detect common failure modes / an incomplete
                                       setup, then fix-and-resume in place (keeps your data)
@@ -2374,6 +2376,20 @@ console_latest_tooling() {
 # The cost of exec'ing first is that a failed download cannot return to the
 # menu — so that path explains itself and exits non-zero instead.
 console_apply_tooling_update() {
+  if tree_has_local_edits; then
+    report_local_edits
+    printf '\n  Updating replaces them with the published versions.\n'
+    if [[ ! -t 0 ]]; then
+      printf '\n  Run: forge-deploy --self-update   (it can keep them)\n\n'
+      return 1
+    fi
+    if ! console_confirm REPLACE "Save a copy and replace them?"; then
+      ok "Nothing was changed."
+      return 0
+    fi
+    local saved
+    saved=$(save_local_edits) && ok "Saved a copy: $saved"
+  fi
   if ! command -v npx >/dev/null 2>&1; then
     warn "Updating this tool needs Node.js, which is not installed here."
     printf '    Install Node 22 or newer from https://nodejs.org, then run this again.\n\n'
@@ -2729,19 +2745,93 @@ cmd_reset() {
   SETUP_ROLE=""; cmd_setup
 }
 
+tree_is_git_checkout() {
+  [[ -d "${REPO_ROOT}/.git" ]]
+}
+
+tree_has_local_edits() {
+  tree_is_git_checkout || return 1
+  ! git -C "$REPO_ROOT" diff --quiet HEAD -- 2>/dev/null
+}
+
+local_edit_files() {
+  git -C "$REPO_ROOT" diff --name-only HEAD -- 2>/dev/null || true
+}
+
+save_local_edits() {
+  local dest
+  dest="${REPO_ROOT}/.local-changes/$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$dest" || return 1
+  git -C "$REPO_ROOT" diff HEAD -- >"${dest}/local.patch" 2>/dev/null || true
+  local f
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    mkdir -p "${dest}/$(dirname "$f")"
+    cp -p "${REPO_ROOT}/${f}" "${dest}/${f}" 2>/dev/null || true
+  done < <(local_edit_files)
+  printf '%s\n' "$dest"
+}
+
+report_local_edits() {
+  local n
+  n=$(local_edit_files | grep -c . || true)
+  printf '\n  %sSomeone has edited %s file(s) on this box that an update would replace:%s\n\n' \
+    "${C_YELLOW}" "$n" "${C_RESET}"
+  git -C "$REPO_ROOT" diff --stat HEAD -- 2>/dev/null | sed 's/^/      /'
+  printf '\n  This is usually a fix someone applied by hand. Look before you lose it.\n'
+}
+
 cmd_self_update() {
   step "Self-update: $REPO_ROOT"
-  if [[ ! -d "${REPO_ROOT}/.git" ]]; then
-    die "Not a git checkout: $REPO_ROOT"
+  tree_is_git_checkout || die "Not a git checkout: $REPO_ROOT"
+
+  if tree_has_local_edits; then
+    local saved=""
+    case "${SELF_UPDATE_LOCAL:-}" in
+      keep)
+        report_local_edits
+        saved=$(save_local_edits) && ok "Saved a copy: $saved"
+        if ! git -C "$REPO_ROOT" stash push --quiet --message "forge-deploy self-update" -- 2>/dev/null; then
+          die "Could not set the local edits aside — nothing was changed."
+        fi
+        if ! git -C "$REPO_ROOT" pull --ff-only; then
+          git -C "$REPO_ROOT" stash pop --quiet 2>/dev/null || true
+          die "Update failed — your edits have been put back."
+        fi
+        if git -C "$REPO_ROOT" stash pop --quiet 2>/dev/null; then
+          ok "Updated, and your edits were re-applied on top."
+        else
+          git -C "$REPO_ROOT" reset --hard --quiet HEAD 2>/dev/null || true
+          warn "Your edits clashed with the update, so they were not re-applied."
+          warn "This install is updated and working; the edits are saved in:"
+          warn "    $saved"
+          warn "Re-apply them by hand with:"
+          warn "    git -C $REPO_ROOT apply ${saved}/local.patch"
+        fi
+        ;;
+      discard)
+        report_local_edits
+        saved=$(save_local_edits) && ok "Saved a copy first: $saved"
+        git -C "$REPO_ROOT" checkout -- . 2>/dev/null || true
+        git -C "$REPO_ROOT" pull --ff-only || die "Update failed."
+        ok "Updated. The discarded edits are still in $saved if you need them."
+        ;;
+      *)
+        report_local_edits
+        printf '\n  See exactly what changed:\n'
+        printf '      git -C %s diff\n' "$REPO_ROOT"
+        printf '\n  Update and keep these edits (a copy is saved first):\n'
+        printf '      forge-deploy --self-update --keep-local\n'
+        printf '\n  Update and throw them away (a copy is still saved):\n'
+        printf '      forge-deploy --self-update --discard-local\n\n'
+        err "Nothing was changed."
+        exit 1
+        ;;
+    esac
+  else
+    git -C "$REPO_ROOT" pull --ff-only
+    ok "Pulled latest"
   fi
-  # Only refuse on tracked-file modifications. Untracked operator files
-  # (.env, override.yml) are gitignored upstream but older Pi installs may
-  # still have them present and unignored — they shouldn't block self-update.
-  if ! git -C "$REPO_ROOT" diff --quiet HEAD -- 2>/dev/null; then
-    die "Local changes to tracked files present in $REPO_ROOT — refusing to pull"
-  fi
-  git -C "$REPO_ROOT" pull --ff-only
-  ok "Pulled latest"
   if [[ -x "${REPO_ROOT}/scripts/install-forge-deploy.sh" ]]; then
     "${REPO_ROOT}/scripts/install-forge-deploy.sh"
   else
@@ -3610,6 +3700,8 @@ main() {
         if [[ $# -ge 2 && "$2" != --* ]]; then remote_api_val="$2"; shift 2; else shift; fi
         ;;
       --self-update)     mode="self-update"; shift ;;
+      --keep-local)      SELF_UPDATE_LOCAL="keep"; shift ;;
+      --discard-local)   SELF_UPDATE_LOCAL="discard"; shift ;;
       --prune-images)    mode="prune-images"; shift ;;
       --pick)            mode="pick"; shift ;;
       --tool-is-current) TOOL_IS_CURRENT=1; shift ;;
