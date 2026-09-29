@@ -1,5 +1,15 @@
 # Postgres 17 → 18 upgrade
 
+> **Do this with one command:** `forge-deploy --pg-upgrade`. It runs everything
+> below — dump, keep the old volume aside, start the new server, restore, verify
+> the table and extension counts match, rebuild the backup sidecar — and refuses
+> to finish if the result does not match what it started with. `forge-deploy`
+> also offers it when a deploy finds the versions mismatched. Undo with
+> `forge-deploy --pg-rollback <volume>`.
+>
+> The rest of this page is what that command does, for when you want to do it by
+> hand or something went wrong partway.
+
 > The compose files now pin `pgvector/pgvector:pg18` (and `postgres:18-alpine`
 > for the GlitchTip crash DB). **Postgres 18 cannot read a Postgres 17 data
 > directory.** Pointing the new image at an existing `pgdata` volume fails to

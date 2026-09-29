@@ -22,7 +22,7 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-readonly FORGE_DEPLOY_VERSION="0.8.14"
+readonly FORGE_DEPLOY_VERSION="0.8.15"
 # The copy installed at /usr/local/bin has no tree around it, so the default
 # stays /opt/forge-deploy. A copy still sitting in <tree>/scripts belongs to
 # that tree — resolving to it is what lets an install live anywhere else.
@@ -200,6 +200,8 @@ USAGE:
   forge-deploy --self-update --keep-local     update, re-applying local edits on top
   forge-deploy --self-update --discard-local  update, throwing local edits away
   forge-deploy --prune-images         remove superseded images (keeps running + rollback tags)
+  forge-deploy --pg-upgrade           move the database to the Postgres version this install needs
+  forge-deploy --pg-rollback <vol>    put a kept pre-upgrade database back
   forge-deploy --recover              Doctor: detect common failure modes / an incomplete
                                       setup, then fix-and-resume in place (keeps your data)
   forge-deploy --fresh-start          Wipe EVERYTHING on this box (containers, database,
@@ -3518,6 +3520,152 @@ pg_running_major() {
   printf '%s\n' "$img" | sed -n 's|.*:pg\([0-9][0-9]*\).*|\1|p' | head -1
 }
 
+pg_data_volume() {
+  local cid
+  cid=$(compose ps -q forge 2>/dev/null | head -1)
+  [[ -n "$cid" ]] || return 1
+  docker inspect "$cid" \
+    -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Name}}{{end}}{{end}}' \
+    2>/dev/null
+}
+
+pg_env_user() { local v; v=$(env_get POSTGRES_USER 2>/dev/null | tr -d '[:space:]'); printf '%s' "${v:-postgres}"; }
+pg_env_db()   { local v; v=$(env_get POSTGRES_DB   2>/dev/null | tr -d '[:space:]'); printf '%s' "${v:-forge}"; }
+
+pg_table_count() {
+  compose exec -T forge psql -U "$(pg_env_user)" -d "$(pg_env_db)" -tAc \
+    "select count(*) from pg_tables where schemaname='public'" 2>/dev/null | tr -d '[:space:]'
+}
+
+pg_extension_list() {
+  compose exec -T forge psql -U "$(pg_env_user)" -d "$(pg_env_db)" -tAc \
+    "select extname from pg_extension order by extname" 2>/dev/null | tr -d '\r' | sort | tr '\n' ' '
+}
+
+pg_wait_ready() {
+  local i
+  for i in $(seq 1 90); do
+    compose exec -T forge pg_isready -U "$(pg_env_user)" >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  return 1
+}
+
+cmd_pg_upgrade() {
+  step "Database version upgrade"
+
+  local pinned running
+  pinned=$(pg_pinned_major)
+  running=$(pg_running_major)
+
+  if [[ -z "$pinned" || -z "$running" ]]; then
+    die "Cannot read the database version on this box — is the database running?"
+  fi
+  if [[ "$pinned" == "$running" ]]; then
+    ok "Already on Postgres ${running}. Nothing to do."
+    return 0
+  fi
+  if (( running > pinned )); then
+    die "This install runs Postgres ${running}, newer than the ${pinned} it expects. Downgrading is not supported."
+  fi
+
+  local vol
+  vol=$(pg_data_volume) || true
+  [[ -n "$vol" ]] || die "Could not find the database storage volume — not upgrading blind."
+
+  local stamp keep dump
+  stamp=$(date +%Y%m%d-%H%M%S)
+  keep="${vol}_pg${running}_${stamp}"
+  dump="${REPO_ROOT}/.local-changes/pg${running}-${stamp}.dump"
+  mkdir -p "$(dirname "$dump")"
+
+  printf '\n  Postgres %s -> %s. Forge will be offline for a few minutes.\n' "$running" "$pinned"
+  printf '  A full copy of the old database is kept, so this is reversible.\n'
+  if [[ -t 0 ]]; then
+    console_confirm UPGRADE "Upgrade the database now?" || { ok "Nothing was changed."; return 0; }
+  fi
+
+  local tables_before ext_before
+  tables_before=$(pg_table_count)
+  ext_before=$(pg_extension_list)
+  ok "Before: ${tables_before} tables, extensions: ${ext_before}"
+
+  step "  Copying the database out"
+  if ! compose exec -T forge pg_dump -U "$(pg_env_user)" -d "$(pg_env_db)" \
+       --format=custom --compress=9 >"$dump" 2>/dev/null; then
+    rm -f "$dump"
+    die "Could not copy the database out — nothing was changed."
+  fi
+  [[ -s "$dump" ]] || { rm -f "$dump"; die "The copy came out empty — nothing was changed."; }
+  ok "Saved: $dump"
+
+  step "  Setting the old database aside"
+  compose down >/dev/null 2>&1 || true
+  docker volume create "$keep" >/dev/null 2>&1 || die "Could not create the backup volume — nothing was changed."
+  if ! docker run --rm -v "${vol}:/from" -v "${keep}:/to" alpine \
+       sh -c 'cd /from && cp -a . /to' >/dev/null 2>&1; then
+    die "Could not copy the old database aside — nothing was changed."
+  fi
+  ok "Kept as: $keep"
+  docker volume rm "$vol" >/dev/null 2>&1 || die "Could not clear the old storage. Your data is safe in $keep."
+
+  step "  Starting Postgres ${pinned}"
+  compose pull forge >/dev/null 2>&1 || true
+  compose up -d forge >/dev/null 2>&1 || die "Postgres ${pinned} would not start. Roll back with: forge-deploy --pg-rollback $keep"
+  pg_wait_ready || die "Postgres ${pinned} never became ready. Roll back with: forge-deploy --pg-rollback $keep"
+
+  step "  Putting the database back"
+  if ! compose exec -T forge pg_restore -U "$(pg_env_user)" -d "$(pg_env_db)" \
+       --clean --if-exists --no-owner <"$dump" 2>/dev/null; then
+    warn "The restore reported problems — checking what actually landed."
+  fi
+
+  local tables_after ext_after
+  tables_after=$(pg_table_count)
+  ext_after=$(pg_extension_list)
+  if [[ "$tables_after" != "$tables_before" || "$ext_after" != "$ext_before" ]]; then
+    err "The upgraded database does not match the original."
+    err "  tables:     ${tables_before} -> ${tables_after}"
+    err "  extensions: ${ext_before}-> ${ext_after}"
+    err "Your original is intact. Roll back with: forge-deploy --pg-rollback $keep"
+    exit 1
+  fi
+  ok "After: ${tables_after} tables, extensions: ${ext_after}"
+
+  step "  Rebuilding the backup helper"
+  compose build forge-backup >/dev/null 2>&1 \
+    || warn "Could not rebuild the backup helper — run: forge-deploy compose build forge-backup"
+
+  step "  Starting everything back up"
+  cmd_up
+
+  ok "Postgres ${running} -> ${pinned} complete."
+  printf '\n  The old database is kept as the volume %s.\n' "$keep"
+  printf '  Once Forge looks right, you can reclaim that space:\n'
+  printf '      docker volume rm %s\n\n' "$keep"
+}
+
+cmd_pg_rollback() {
+  local keep="${1:-}"
+  [[ -n "$keep" ]] || die "Which backup volume? Run: docker volume ls | grep _pg"
+  docker volume inspect "$keep" >/dev/null 2>&1 || die "No such volume: $keep"
+  step "Rolling the database back to $keep"
+  local vol
+  vol=$(pg_data_volume) || true
+  if [[ -z "$vol" ]]; then
+    vol="$(basename "$keep" | sed 's/_pg[0-9]*_[0-9-]*$//')"
+  fi
+  [[ -t 0 ]] && { console_confirm ROLLBACK "Replace the current database with $keep?" || { ok "Nothing was changed."; return 0; }; }
+  compose down >/dev/null 2>&1 || true
+  docker volume rm "$vol" >/dev/null 2>&1 || true
+  docker volume create "$vol" >/dev/null 2>&1 || die "Could not recreate $vol"
+  docker run --rm -v "${keep}:/from" -v "${vol}:/to" alpine sh -c 'cd /from && cp -a . /to' >/dev/null 2>&1 \
+    || die "Could not copy the old database back."
+  warn "The database is back on its old version, but this install expects a newer one."
+  warn "Pin the old version in docker-compose.yml before starting, or run --pg-upgrade again."
+  ok "Restored $keep into $vol."
+}
+
 check_pg_major() {
   [[ "${SKIP_PG_MAJOR_CHECK:-}" == "true" ]] && return 0
   local pinned running
@@ -3527,12 +3675,25 @@ check_pg_major() {
   # a server that is not up yet, or a compose file that pins no pgvector image.
   [[ -n "$pinned" && -n "$running" ]] || return 0
   [[ "$pinned" == "$running" ]] && return 0
-  err "Postgres major mismatch — refusing to deploy."
-  err "  running server: pg${running}     compose pins: pg${pinned}"
-  err "Postgres ${pinned} cannot read a pg${running} data directory, so this deploy"
-  err "would take the database down and leave it down until it is migrated."
-  err "Migrate first — see docs/postgres-18-upgrade.md (dump on the old server,"
-  err "move the volume aside, restore). Override with SKIP_PG_MAJOR_CHECK=true."
+  warn "This install's database is on Postgres ${running}; this version needs ${pinned}."
+  if [[ -t 0 ]]; then
+    printf '\n  Forge can move it across for you now. It keeps a full copy of the\n'
+    printf '  old database first, so it can be undone, and takes a few minutes\n'
+    printf '  during which Forge is offline.\n'
+    if console_menu "Choose" \
+        "Move the database to Postgres ${pinned}, then carry on   (recommended)" \
+        "Stop — change nothing"; then
+      case "$CHOICE" in
+        1) cmd_pg_upgrade; return 0 ;;
+        *) ok "Nothing was changed."; exit 0 ;;
+      esac
+    fi
+    ok "Nothing was changed."
+    exit 0
+  fi
+  err "Postgres ${pinned} cannot read a pg${running} data directory, so continuing"
+  err "would take the database down and leave it down."
+  err "Move it across with: forge-deploy --pg-upgrade"
   exit 1
 }
 
@@ -3700,6 +3861,8 @@ main() {
         if [[ $# -ge 2 && "$2" != --* ]]; then remote_api_val="$2"; shift 2; else shift; fi
         ;;
       --self-update)     mode="self-update"; shift ;;
+      --pg-upgrade)      mode="pg-upgrade"; shift ;;
+      --pg-rollback)     mode="pg-rollback"; PG_ROLLBACK_VOL="${2:-}"; shift 2 ;;
       --keep-local)      SELF_UPDATE_LOCAL="keep"; shift ;;
       --discard-local)   SELF_UPDATE_LOCAL="discard"; shift ;;
       --prune-images)    mode="prune-images"; shift ;;
@@ -3766,6 +3929,12 @@ main() {
       ;;
     prune-images)
       cmd_prune_images
+      ;;
+    pg-upgrade)
+      cmd_pg_upgrade
+      ;;
+    pg-rollback)
+      cmd_pg_rollback "${PG_ROLLBACK_VOL:-}"
       ;;
     self-update)
       cmd_self_update

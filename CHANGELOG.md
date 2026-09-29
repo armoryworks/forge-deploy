@@ -2,6 +2,22 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.15] - 2026-09-29
+
+The database version upgrade stops being a runbook.
+
+### Added
+
+- **`forge-deploy --pg-upgrade`** moves an install to the Postgres major version it expects, and the deploy guard now *offers* it instead of only refusing. It dumps from the running old server (whose own `pg_dump` always matches it), copies the data volume aside, starts the new server, restores, and then **compares the table count and extension list against what it started with** — a mismatch stops with the original still intact rather than reporting success. It also rebuilds the backup sidecar, which the hand-written runbook never mentioned and which silently breaks every later upgrade when missed.
+
+  Verified end to end against a live pgvector stack: pg17 with data and the `vector` extension, upgraded to pg18, rows and extensions intact, old volume retained.
+
+- **`forge-deploy --pg-rollback <volume>`** puts a kept pre-upgrade database back, and says plainly that the compose pin still expects the newer version.
+
+### Changed
+
+- **The Postgres guard added in 0.8.12 now leads with the fix.** It was correct but terminal — it told an operator their database was on the wrong version and pointed at a six-step document. On a terminal it now offers to do the move, explains that a full copy is kept first and that Forge is offline for a few minutes, and carries on with the deploy afterwards. Non-interactive callers still get a hard stop, now naming the command.
+
 ## [0.8.14] - 2026-09-29
 
 A client tried to update his own install and hit a wall with nothing written on
