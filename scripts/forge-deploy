@@ -22,7 +22,7 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-readonly FORGE_DEPLOY_VERSION="0.8.16"
+readonly FORGE_DEPLOY_VERSION="0.8.17"
 # The copy installed at /usr/local/bin has no tree around it, so the default
 # stays /opt/forge-deploy. A copy still sitting in <tree>/scripts belongs to
 # that tree — resolving to it is what lets an install live anywhere else.
@@ -2182,7 +2182,8 @@ cmd_fresh_start() {
   rm -rf "${REPO_ROOT}/certs"
   if [[ -f "$STATE_FILE" && -w "$STATE_FILE" ]]; then
     local tmp; tmp=$(mktemp)
-    jq 'del(.box)' "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE" || rm -f "$tmp"
+    jq 'if .box.repoRoot then {box:{repoRoot:.box.repoRoot}} else {} end' \
+      "$STATE_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE" || rm -f "$tmp"
   fi
   ok "Clean slate"
   trace "Fresh start: tore down containers/volumes and removed generated config."
@@ -2234,7 +2235,7 @@ pick_component_version() {
   [[ -z "$current" ]] && current=$(env_get "$(service_envvar "$svc_id")" 2>/dev/null || true)
   printf '\n%s%s%s  (current: %s)\n' "${C_CYAN}${C_BOLD}" "$svc_id" "${C_RESET}" "${current:-<none>}" >&2
 
-  rows=$(version_sha_rows "$repo" 12)
+  rows=$(version_sha_rows "$repo" 12 | sort -t'\t' -k1,1 -Vr)
   if [[ -z "$rows" ]]; then
     printf '  %s(no published versions found in GHCR)%s\n' "${C_DIM}" "${C_RESET}" >&2
     return 0

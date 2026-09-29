@@ -2,6 +2,16 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.17] - 2026-09-29
+
+### Fixed
+
+- **"Start over" left the deploy history behind, so a wiped box reported month-old versions.** The teardown ran `jq 'del(.box)'`, which drops the topology and keeps every per-service record. Setup does not write those (only a deploy does), so a freshly erased install still answered `--status` with whatever it last ran — a design partner wiped a box and saw `1.0.0-beta.22, deployedAt 2026-08-25`. It now keeps only the recorded install root and discards the rest, because after a wipe there is no deployment history to report.
+
+  Not cosmetic: the agent serves `deploy-state.json` to the in-app Updates screen, so a fresh install would have shown the old version there too — and `--rollback` re-pins to `prior`, which on that box still read `1.0.0-beta.2`. A rollback on a clean install would have tried to deploy a months-old image.
+
+- **The version picker listed releases in registry order, newest buried.** Choosing the current release meant reading all twelve entries to find it — `1.0.0-beta.26` sat at `[9]` for one component and `[12]` for another in the same session. Sorted newest-first, so `[1]` is the answer nearly everyone wants.
+
 ## [0.8.16] - 2026-09-29
 
 ### Fixed
