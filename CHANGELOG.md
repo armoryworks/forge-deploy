@@ -2,6 +2,12 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.16] - 2026-09-29
+
+### Fixed
+
+- **A fresh install could not build the backup sidecar at all.** MinIO removed the public client binary from `dl.min.io`, which now answers **410 Gone**, so `docker build` of `backup/` died on `curl: (22) The requested URL returned error: 410` and took first-time setup down with it. Hit by a design partner mid-install. `mc` now comes from a **pinned** GitHub release (`MC_VERSION`) instead of a floating vendor URL — the same shape as the supercronic pin beside it, and no longer something a vendor can retire underneath us. Verified by building the image and running `mc`, `pg_dump` and `supercronic` inside it on both published architectures.
+
 ## [0.8.15] - 2026-09-29
 
 The database version upgrade stops being a runbook.

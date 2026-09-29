@@ -16,6 +16,7 @@
 FROM postgres:18-alpine
 
 ARG SUPERCRONIC_VERSION=v0.2.29
+ARG MC_VERSION=RELEASE.2025-08-13T08-35-41Z
 
 # TARGETARCH is set automatically by BuildKit (amd64 / arm64) to the build
 # platform — i.e. the host arch on a plain `docker compose build`. supercronic
@@ -29,7 +30,7 @@ RUN apk add --no-cache bash ca-certificates curl tzdata \
  && curl -fsSL "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${ARCH}" \
       -o /usr/local/bin/supercronic \
  && chmod +x /usr/local/bin/supercronic \
- && curl -fsSL "https://dl.min.io/client/mc/release/linux-${ARCH}/mc" \
+ && curl -fsSL "https://github.com/minio/mc/releases/download/${MC_VERSION}/mc.linux-${ARCH}.${MC_VERSION}" \
       -o /usr/local/bin/mc \
  && chmod +x /usr/local/bin/mc
 
