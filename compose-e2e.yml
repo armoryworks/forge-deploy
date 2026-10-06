@@ -51,6 +51,7 @@ services:
       - "127.0.0.1:5000:8080"
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
+      - UseMockClock=true
       # Ephemeral CI database — recreate + seed demo data so the e2e suite has
       # known users/fixtures to log in against (auth.helper SEED_PASSWORD).
       - RECREATE_DB=true

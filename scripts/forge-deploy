@@ -425,6 +425,23 @@ preflight() {
   if [[ ! -w "$LOG_FILE" ]]; then
     die "Log file not writable: $LOG_FILE"
   fi
+
+  migrate_runtime_environment
+}
+
+migrate_runtime_environment() {
+  local cur
+  cur=$(env_get ASPNETCORE_ENVIRONMENT 2>/dev/null | tr -d '[:space:]')
+  [[ "$cur" == "Development" ]] || return 0
+  if [[ ! -w "$ENV_FILE" ]]; then
+    warn "This install runs in Development mode, which freezes the clock and disables rate limiting."
+    warn "Set ASPNETCORE_ENVIRONMENT=Production in $ENV_FILE, then redeploy."
+    return 0
+  fi
+  env_set ASPNETCORE_ENVIRONMENT Production
+  ok "Switched this install from Development to Production mode."
+  printf '%sDevelopment mode froze the application clock and turned off rate limiting.%s\n' "${C_DIM}" "${C_RESET}"
+  printf '%sTimestamps recorded before this change are wrong and are not corrected by it.%s\n' "${C_DIM}" "${C_RESET}"
 }
 
 # ─────────────────────────────────────────────────────────────
