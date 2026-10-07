@@ -984,12 +984,17 @@ cmd_support_bundle() {
 
   step "Collecting a support bundle"
   tooling_version_line > "${dest}/version.txt"
-  for c in forge-api forge-ui forge; do
-    local file="$c"
-    [[ "$c" == "forge" ]] && file="forge-db"
-    docker logs --timestamps --tail 2000 "$c" 2>&1 | sanitize > "${dest}/${file}.log" || true
+  local ui_live ui_standby
+  ui_live=$(ui_live_service)
+  ui_standby=$([[ "$ui_live" == "forge-ui" ]] && printf 'forge-ui-b' || printf 'forge-ui')
+  local -a sources=("forge-api:forge-api" "${ui_live}:forge-ui" "forge:forge-db")
+  docker inspect --type container "$ui_standby" >/dev/null 2>&1 && sources+=("${ui_standby}:forge-ui-standby")
+  local pair
+  for pair in "${sources[@]}"; do
+    c="${pair%%:*}"
+    docker logs --timestamps --tail 2000 "$c" 2>&1 | sanitize > "${dest}/${pair#*:}.log" || true
   done
-  ok "Container logs (forge-api, forge-ui, forge-db)"
+  ok "Container logs (forge-api, ${ui_live}, forge-db)"
   ( cmd_status ) 2>&1 | sed -E "$strip_ansi" > "${dest}/status.txt" || true
   ( bootstrap_scan ) 2>&1 | sed -E "$strip_ansi" > "${dest}/recovery-scan.txt" || true
   collect_diagnostics > "${dest}/diagnostics.md" || true

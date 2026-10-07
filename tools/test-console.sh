@@ -61,6 +61,7 @@ case "$1" in
   inspect)
     cid="${*: -1}"
     svc="${cid#cid-}"
+    [[ -f "$F/absent_${svc}" ]] && { echo "Error: No such container: ${svc}" >&2; exit 1; }
     if [[ -f "$F/health_${svc}" ]]; then cat "$F/health_${svc}"; else echo healthy; fi
     exit 0 ;;
 esac
@@ -562,6 +563,33 @@ if [[ -n "$ARCHIVE" && -f "$ARCHIVE" ]]; then
 else
   printf '  %s✗%s %s\n' "$C_R" "$C_0" "prints the path of an archive that exists"; FAIL=$((FAIL+1))
   printf '%s\n' "$OUT" | sed 's/^/        | /' | head -30
+fi
+
+scenario "--support-bundle follows the live blue/green UI"
+printf 'UI_LIVE_SERVICE=forge-ui-b\n' >> "$SANDBOX/tree/.env"
+printf 'old ui retired\n' > "$SANDBOX/fake/logs_forge-ui"
+printf 'live ui serving\n' > "$SANDBOX/fake/logs_forge-ui-b"
+touch "$SANDBOX/fake/absent_forge-ui"
+mkdir -p "$SANDBOX/bundle-bg"
+OUT=$(cd "$SANDBOX/bundle-bg" && run_cli "" --support-bundle)
+show "$OUT"
+ARCHIVE=$(grep -oE "$SANDBOX/bundle-bg/forge-support-[0-9TZ]+\.tar\.gz" <<<"$OUT" | head -1)
+if [[ -n "$ARCHIVE" && -f "$ARCHIVE" ]]; then
+  UNPACK="$SANDBOX/bundle-bg/unpacked"; mkdir -p "$UNPACK"; tar -xzf "$ARCHIVE" -C "$UNPACK"
+  check "forge-ui.log is the live forge-ui-b" "$(cat "$UNPACK"/*/forge-ui.log)" "live ui serving"
+  check_not "no standby log when there is no standby" "$(tar -tzf "$ARCHIVE")" "forge-ui-standby.log"
+else
+  printf '  %s✗%s %s\n' "$C_R" "$C_0" "prints the path of an archive that exists"; FAIL=$((FAIL+1))
+fi
+rm -f "$SANDBOX/fake/absent_forge-ui"
+mkdir -p "$SANDBOX/bundle-bg2"
+OUT=$(cd "$SANDBOX/bundle-bg2" && run_cli "" --support-bundle)
+ARCHIVE=$(grep -oE "$SANDBOX/bundle-bg2/forge-support-[0-9TZ]+\.tar\.gz" <<<"$OUT" | head -1)
+if [[ -n "$ARCHIVE" && -f "$ARCHIVE" ]]; then
+  UNPACK="$SANDBOX/bundle-bg2/unpacked"; mkdir -p "$UNPACK"; tar -xzf "$ARCHIVE" -C "$UNPACK"
+  check "a leftover standby is collected too" "$(cat "$UNPACK"/*/forge-ui-standby.log 2>/dev/null)" "old ui retired"
+else
+  printf '  %s✗%s %s\n' "$C_R" "$C_0" "prints the path of an archive that exists"; FAIL=$((FAIL+1))
 fi
 
 reset_fake

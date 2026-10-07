@@ -21,7 +21,7 @@ Fixes for what a design partner hit trying to upgrade.
 
 ### Added
 
-- **`forge-deploy --support-bundle`** writes the `forge-api`, `forge-ui` and database logs, the deploy status, the recovery scan, the reachability doctor's output and the existing diagnostics into one `.tar.gz` and prints its path. Logs pass through the same redaction as filed issues, and the archive is readable only by its owner.
+- **`forge-deploy --support-bundle`** writes the `forge-api`, `forge-ui` and database logs (on a blue/green install, the UI container currently serving, plus a leftover standby if there is one), the deploy status, the recovery scan, the reachability doctor's output and the existing diagnostics into one `.tar.gz` and prints its path. Logs pass through the same redaction as filed issues, and the archive is readable only by its owner.
 - **`--version` and `--status` print `Deploy tooling: <package version> (tree <tag>)`**, so one line tells support which installer delivered the tree and which release the tree is.
 
 ## [0.8.17] - 2026-09-29
