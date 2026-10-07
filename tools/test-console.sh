@@ -66,11 +66,12 @@ cat > "$SANDBOX/bin/curl" <<'FAKE'
 # diagnosis. Callers passing -w '%{http_code}' get the code on its own trailing
 # line exactly as curl does; callers that don't are unaffected.
 F="$FAKE_DIR"
-url=""; want_code=0
+url=""; want_code=0; bearer=0
 for a in "$@"; do
   case "$a" in
     https://*) url="$a";;
     *'%{http_code}'*) want_code=1;;
+    'Authorization: Bearer faketoken') bearer=1;;
   esac
 done
 emit() { # <body> <status>
@@ -101,6 +102,12 @@ case "$url" in
       for t in $tags; do printf '%s"%s"' "$sep" "$t"; sep=","; done
       printf ']}')
     emit "$body" 200 ;;
+  *manifests/*)
+    [[ -f "$F/digests" ]] || exit 22
+    [[ "$bearer" == 1 || -f "$F/no_token_endpoint" ]] || exit 22
+    d=$(awk -v t="${url##*/manifests/}" '$1==t{print $2}' "$F/digests")
+    [[ -n "$d" ]] || exit 22
+    printf 'HTTP/2 200\r\ndocker-content-digest: %s\r\n\r\n' "$d" ;;
   *) exit 22 ;;
 esac
 exit 0
@@ -238,6 +245,31 @@ scenario() { printf '\n%s%s%s\n' "$C_Y" "$1" "$C_0"; reset_fake; }
 # want rather than counting lines that move under them.
 menu_number() {
   sed -n "s/^[[:space:]]*\([0-9]\{1,\}\)[[:space:]].*$2.*/\1/p" <<<"$1" | head -1
+}
+
+run_cli() {
+  local input="$1"; shift
+  printf '%s\n' "$input" | env \
+    PATH="$SANDBOX/bin:$PATH" \
+    FAKE_DIR="$SANDBOX/fake" \
+    FORGE_DEPLOY_REPO="$SANDBOX/tree" \
+    FORGE_STATE_DIR="$SANDBOX/state" \
+    FORGE_LOG_FILE="$SANDBOX/state/forge-deploy.log" \
+    NO_COLOR=1 \
+    timeout 25 bash "$CLI" "$@" 2>&1
+}
+
+picker_fixture() {
+  printf '1.0.0-beta.9 1.0.0-beta.25 main-aaaa111 1.0.0-beta.22 main-bbbb222 1.0.0-beta.3 1.0.0-beta.10\n' \
+    > "$SANDBOX/fake/ghcr_tags"
+  cat > "$SANDBOX/fake/digests" <<'DIG'
+1.0.0-beta.25 sha256:a25
+main-aaaa111 sha256:a25
+1.0.0-beta.22 sha256:b22
+main-bbbb222 sha256:b22
+1.0.0-beta.10 sha256:d10
+1.0.0-beta.9 sha256:c09
+DIG
 }
 
 # ── scenarios ────────────────────────────────────────────────
@@ -431,6 +463,28 @@ scenario "A box with no recorded versions refuses to prune"
 printf '{"box":{"role":"all"}}' > "$SANDBOX/state/deploy-state.json"
 OUT=$(run_console "")
 check_not "no cleanup offered"   "$OUT" "Free up disk"
+
+scenario "Version picker lists every published release, newest first"
+picker_fixture
+OUT=$(run_cli "q" --pick)
+show "$OUT"
+check_not "finds the published versions" "$OUT" "no published versions found"
+check_not "sort does not fail"           "$OUT" "multi-character tab"
+ORDER=$(sed -n 's/.*\[[0-9]\{1,\}\] \{1,\}\([^ ]\{1,\}\).*/\1/p' <<<"$OUT" | head -5 | tr '\n' ' ')
+check "newest first, version-aware" "$ORDER" "1.0.0-beta.25 1.0.0-beta.22 1.0.0-beta.10 1.0.0-beta.9 1.0.0-beta.3 "
+check "pairs a release with its build"  "$OUT" "[1] 1.0.0-beta.25 (main-aaaa111)"
+check "marks the running release"       "$OUT" "[2] 1.0.0-beta.22 (main-bbbb222)  « current"
+check "says when no build matches"      "$OUT" "[4] 1.0.0-beta.9 (no matching build hash)"
+check "keeps a release with no digest"  "$OUT" "[5] 1.0.0-beta.3"
+check_not "no bare question mark"       "$OUT" "(?)"
+check "quitting changes nothing"        "$OUT" "Stopped — no further changes."
+
+scenario "The --list view resolves build hashes too"
+picker_fixture
+OUT=$(run_cli "" --list)
+show "$OUT"
+check "pairs the newest release"   "$OUT" "1.0.0-beta.25  (main-aaaa111)"
+check_not "every hash resolved for paired releases" "$OUT" "1.0.0-beta.22  (build hash unresolved)"
 
 reset_fake
 scenario "Starting over is offered, but never recommended"

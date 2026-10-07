@@ -606,6 +606,15 @@ ghcr_manifest_digest() {
     | tail -1
 }
 
+# Tags on stdin -> "tag<TAB>digest" rows, resolved in parallel, in completion
+# order. The digest is empty when the registry returned none.
+tag_digest_rows() {
+  local repo="$1"
+  export REGISTRY_HOST REGISTRY_OWNER REGISTRY_SCHEME REGISTRY_TIMEOUT STATE_DIR
+  export -f ghcr_manifest_digest ghcr_token ghcr_basic_creds registry_auth_args
+  grep -v '^$' | xargs -r -P 8 -I{} bash -c 'printf "%s\t%s\n" "$1" "$(ghcr_manifest_digest "$0" "$1")"' "$repo" {} 2>/dev/null || true
+}
+
 # HEAD a tag's manifest to verify existence. 0 = exists, 1 = missing.
 ghcr_tag_exists() {
   local repo="$1" tag="$2" token http_code
@@ -869,14 +878,9 @@ list_combined() {
   ghcr_token "$repo" >/dev/null 2>&1 || true
   printf '  %s(resolving build hashes…)%s\r' "${C_DIM}" "${C_RESET}" >&2
 
-  export REGISTRY_HOST REGISTRY_OWNER STATE_DIR
-  export -f ghcr_manifest_digest ghcr_token ghcr_basic_creds
-
   local ver_digests sha_digests
-  ver_digests=$(printf '%s\n' "$versions" \
-    | xargs -P 8 -I{} bash -c 'd=$(ghcr_manifest_digest "$0" "$1"); [[ -n "$d" ]] && printf "%s\t%s\n" "$1" "$d"' "$repo" {} 2>/dev/null || true)
-  sha_digests=$(printf '%s\n' "$shas" \
-    | xargs -P 8 -I{} bash -c 'd=$(ghcr_manifest_digest "$0" "$1"); [[ -n "$d" ]] && printf "%s\t%s\n" "$1" "$d"' "$repo" {} 2>/dev/null || true)
+  ver_digests=$(printf '%s\n' "$versions" | tag_digest_rows "$repo")
+  sha_digests=$(printf '%s\n' "$shas" | tag_digest_rows "$repo")
 
   # digest → sha lookup.
   local -A sha_by_digest
@@ -2217,7 +2221,8 @@ cmd_fresh_start() {
 
 # ── Interactive per-component version picker + reset ─────────────────────────
 
-# Echo "semver<TAB>sha" rows for a repo's recent versions, oldest->newest.
+# Echo "semver<TAB>sha" rows for a repo's recent versions, newest first. The sha
+# column is empty when no build tag shares the version's manifest digest.
 # Pairs each X.Y.Z with its main-<sha> build (they share a manifest digest).
 version_sha_rows() {
   local repo="$1" limit="${2:-12}" tags versions shas
@@ -2226,33 +2231,31 @@ version_sha_rows() {
   [[ -z "$versions" ]] && return 0
   shas=$(printf '%s\n' "$tags" | grep -E '^main-[a-f0-9]+$' || true)
   ghcr_token "$repo" >/dev/null 2>&1 || true
-  export REGISTRY_HOST REGISTRY_OWNER STATE_DIR
-  export -f ghcr_manifest_digest ghcr_token ghcr_basic_creds
   local ver_d sha_d
-  ver_d=$(printf '%s\n' "$versions" | xargs -P 8 -I{} bash -c 'd=$(ghcr_manifest_digest "$0" "$1"); [[ -n "$d" ]] && printf "%s\t%s\n" "$1" "$d"' "$repo" {} 2>/dev/null || true)
-  sha_d=$(printf '%s\n' "$shas" | xargs -P 8 -I{} bash -c 'd=$(ghcr_manifest_digest "$0" "$1"); [[ -n "$d" ]] && printf "%s\t%s\n" "$1" "$d"' "$repo" {} 2>/dev/null || true)
+  ver_d=$(printf '%s\n' "$versions" | tag_digest_rows "$repo")
+  sha_d=$(printf '%s\n' "$shas" | tag_digest_rows "$repo")
   local -A sha_by_d; local tag dg
   while IFS=$'\t' read -r tag dg; do [[ -n "$dg" ]] && sha_by_d["$dg"]="$tag"; done <<<"$sha_d"
   local v
   # xargs -P returns rows in completion order — restore version order.
   while IFS=$'\t' read -r v dg; do
     [[ -z "$v" ]] && continue
-    printf '%s\t%s\n' "$v" "${sha_by_d[$dg]:-}"
-  done <<<"$(printf '%s\n' "$ver_d" | sort -V)"
+    printf '%s\t%s\n' "$v" "${dg:+${sha_by_d[$dg]:-}}"
+  done <<<"$(printf '%s\n' "$ver_d" | sort -t$'\t' -k1,1 -Vr)"
 }
 
 # Interactive version chooser for ONE component. Renders the version list to
-# stderr (oldest->newest, current marked with » «, default highlighted), reads a
+# stderr (newest first, current marked with » «, default highlighted), reads a
 # choice, and ECHOES the chosen semver to stdout. Default (Enter) = current if
 # set, else newest. Return: 0 chosen/kept, 10 = re-setup hotkey, 20 = quit.
 pick_component_version() {
-  local svc_id="$1" repo current rows cur_ver newest
+  local svc_id="$1" repo current rows cur_ver newest=""
   repo=$(service_repo "$svc_id")
   current=$(state_get "$repo" current 2>/dev/null || true)
   [[ -z "$current" ]] && current=$(env_get "$(service_envvar "$svc_id")" 2>/dev/null || true)
   printf '\n%s%s%s  (current: %s)\n' "${C_CYAN}${C_BOLD}" "$svc_id" "${C_RESET}" "${current:-<none>}" >&2
 
-  rows=$(version_sha_rows "$repo" 12 | sort -t'\t' -k1,1 -Vr)
+  rows=$(version_sha_rows "$repo" 12)
   if [[ -z "$rows" ]]; then
     printf '  %s(no published versions found in GHCR)%s\n' "${C_DIM}" "${C_RESET}" >&2
     return 0
@@ -2268,12 +2271,12 @@ pick_component_version() {
   local -a vers=(); local i=1 mark note default_ver
   while IFS=$'\t' read -r v s; do
     [[ -z "$v" ]] && continue
-    vers+=("$v"); newest="$v"
+    vers+=("$v"); [[ -z "$newest" ]] && newest="$v"
     mark="   "; note=""
     if [[ -n "$cur_ver" && "$v" == "$cur_ver" ]]; then
       mark="${C_GREEN}»${C_RESET}  "; note="  ${C_GREEN}« current${C_RESET}"
     fi
-    printf '  %s%s[%d]%s %-10s %s(%s)%s%s\n' "$mark" "${C_BOLD}" "$i" "${C_RESET}" "$v" "${C_DIM}" "${s:-?}" "${C_RESET}" "$note" >&2
+    printf '  %s%s[%d]%s %-10s %s(%s)%s%s\n' "$mark" "${C_BOLD}" "$i" "${C_RESET}" "$v" "${C_DIM}" "${s:-no matching build hash}" "${C_RESET}" "$note" >&2
     i=$((i+1))
   done <<<"$rows"
 
