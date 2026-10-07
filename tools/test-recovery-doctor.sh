@@ -41,6 +41,7 @@ new_sandbox() { # new_sandbox <name> -> echoes path
   local sb="$WORK/$1"
   mkdir -p "$sb/scripts"
   cp "$ROOT/docker-compose.yml" "$ROOT/docker-compose.prod.yml" "$sb/"
+  cp "$ROOT/scripts/docker-probe.sh" "$sb/scripts/"
   # Synthetic env template: enough keys to exercise merge/jwt/pin detection.
   cat > "$sb/.env.example" <<'EOT'
 JWT_KEY=dev-secret-key-change-in-production-min-32-chars!!
