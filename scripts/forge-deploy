@@ -451,6 +451,12 @@ migrate_runtime_environment() {
 # Tag validation
 # ─────────────────────────────────────────────────────────────
 
+# sort -V that ranks a release above its own prereleases (plain -V puts 1.0.0
+# below 1.0.0-beta.1). Extra args go to sort; tags cannot contain '~'.
+semver_sort() {
+  sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+)-/\1~/' | sort -V "$@" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+)~/\1-/'
+}
+
 validate_tag() {
   local tag="$1"
   if [[ "$tag" == "latest" ]]; then
@@ -844,9 +850,9 @@ cmd_list() {
         ;;
       releases)
         local matched
-        # sort -Vr: version-aware so 0.0.115 ranks above 0.0.9 (plain
-        # sort -r would put 0.0.9 first — wrong). grep||true: see above.
-        matched=$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' | sort -Vr | head -"$LIST_VERSION_LIMIT" || true)
+        # semver_sort: 0.0.115 ranks above 0.0.9, and 1.0.0 above
+        # 1.0.0-rc.1. grep||true: see above.
+        matched=$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' | semver_sort -r | head -"$LIST_VERSION_LIMIT" || true)
         [[ -z "$matched" ]] \
           && printf '  %s(no release tags)%s\n' "${C_DIM}" "${C_RESET}" \
           || printf '%s\n' "$matched" | sed 's/^/  /'
@@ -869,7 +875,7 @@ list_combined() {
 
   # grep||true throughout: under `set -e` a no-match grep aborts the run.
   local versions shas
-  versions=$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' | sort -Vr | head -"$LIST_VERSION_LIMIT" || true)
+  versions=$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' | semver_sort -r | head -"$LIST_VERSION_LIMIT" || true)
   shas=$(printf '%s\n' "$tags" | grep -E '^main-[a-f0-9]+$' || true)
 
   if [[ -z "$versions" ]]; then
@@ -2049,7 +2055,7 @@ pin_newest() {
   local svc="$1" repo newest raw lrc=0
   repo=$(service_repo "$svc")
   raw=$(ghcr_list_tags "$repo" 2>/dev/null) || lrc=$?
-  newest=$(printf '%s\n' "$raw" | grep -E "$TAG_RE_SEMVER" | sort -V | tail -1 || true)
+  newest=$(printf '%s\n' "$raw" | grep -E "$TAG_RE_SEMVER" | semver_sort | tail -1 || true)
   if [[ -z "$newest" ]]; then
     err "Cannot pin a version for '$svc': $(ghcr_reason_text "$svc" "$lrc"). Then re-run: forge-deploy --recover"
     return 1
@@ -2293,7 +2299,7 @@ cmd_fresh_start() {
 version_sha_rows() {
   local repo="$1" limit="${2:-12}" tags versions shas
   tags=$(ghcr_list_tags "$repo" 2>/dev/null || true)
-  versions=$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' | sort -V | tail -"$limit" || true)
+  versions=$(printf '%s\n' "$tags" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' | semver_sort | tail -"$limit" || true)
   [[ -z "$versions" ]] && return 0
   shas=$(printf '%s\n' "$tags" | grep -E '^main-[a-f0-9]+$' || true)
   ghcr_token "$repo" >/dev/null 2>&1 || true
@@ -2307,7 +2313,7 @@ version_sha_rows() {
   while IFS=$'\t' read -r v dg; do
     [[ -z "$v" ]] && continue
     printf '%s\t%s\n' "$v" "${dg:+${sha_by_d[$dg]:-}}"
-  done <<<"$(printf '%s\n' "$ver_d" | sort -t$'\t' -k1,1 -Vr)"
+  done <<<"$(printf '%s\n' "$ver_d" | semver_sort -t$'\t' -k1,1 -r)"
 }
 
 # Interactive version chooser for ONE component. Renders the version list to
@@ -2756,7 +2762,7 @@ cmd_console() {
     have_tool=$(console_installed_tooling)
     latest_tool=$(console_latest_tooling)
     if [[ -n "$have_tool" && -n "$latest_tool" && "$have_tool" != "$latest_tool" ]] \
-       && [[ "$(printf '%s\n%s\n' "$have_tool" "$latest_tool" | sort -V | tail -1)" == "$latest_tool" ]]; then
+       && [[ "$(printf '%s\n%s\n' "$have_tool" "$latest_tool" | semver_sort | tail -1)" == "$latest_tool" ]]; then
       tooling="$latest_tool"
       printf '  %sA newer version of this tool is available:%s  %s → %s\n' \
         "${C_BOLD}" "${C_RESET}" "$have_tool" "$tooling"
@@ -3505,7 +3511,7 @@ resolve_newest_common() {
       common=$(comm -12 <(sort <<<"$common") <(sort <<<"$tags"))
     fi
   done
-  local newest; newest=$(sort -V <<<"$common" | tail -1)
+  local newest; newest=$(semver_sort <<<"$common" | tail -1)
   [[ -n "$newest" ]] || return 2
   RESOLVE_NEWEST="$newest"
 }

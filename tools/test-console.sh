@@ -490,6 +490,17 @@ check_not "no bare question mark"       "$OUT" "(?)"
 check "quitting changes nothing"        "$OUT" "Stopped — no further changes."
 check "the workers share one token"    "requests=$(grep -c . "$SANDBOX/fake/token_requests");" "requests=2;"
 
+scenario "A final release ranks above its own prereleases"
+printf '1.0.0-beta.25 1.0.0 1.0.1-rc.1 1.0.0-rc.1 1.0.0-beta.22\n' > "$SANDBOX/fake/ghcr_tags"
+: > "$SANDBOX/fake/digests"
+OUT=$(run_cli "q" --pick)
+show "$OUT"
+ORDER=$(sed -n 's/.*\[[0-9]\{1,\}\] \{1,\}\([^ ]\{1,\}\).*/\1/p' <<<"$OUT" | head -5 | tr '\n' ' ')
+check "picker: 1.0.0 above 1.0.0-rc.1" "$ORDER" "1.0.1-rc.1 1.0.0 1.0.0-rc.1 1.0.0-beta.25 1.0.0-beta.22 "
+OUT=$(run_cli "" --list)
+check "--list: the newest is marked latest" "$OUT" "1.0.1-rc.1    (build hash unresolved)  ← latest"
+check "--list: 1.0.0 sits above its rc" "$(grep -oE '1\.0\.0(-rc\.1)?  ' <<<"$OUT" | head -2 | tr -d ' ' | tr '\n' ' ')" "1.0.0 1.0.0-rc.1 "
+
 scenario "The --list view resolves build hashes too"
 picker_fixture
 OUT=$(run_cli "" --list)
