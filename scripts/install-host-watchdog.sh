@@ -215,6 +215,9 @@ The host network watchdog is now active.
       watchdog keeps restarting networking + logging but stops rebooting
       — a sustained LAN failure means the next reboot won't help either,
       and an indefinite reboot loop just wears the SD card.
+    - Neither step runs until the network has answered once since boot,
+      so a box on an isolated network is left alone. With no default
+      route, networking is restarted but the host never reboots.
     - Counter resets on the first successful check.
 
   Files:

@@ -216,6 +216,7 @@ At the end of the deploy, `setup.sh` installs a small systemd-driven network wat
 Two safety nets keep the recovery path from making things worse:
 
 - **TCP-connect fallback.** If every ICMP probe fails, the watchdog tries TCP 443 against the public targets before concluding the network is dead. Networks that drop ICMP to public IPs while allowing HTTPS (common on managed / enterprise gateways) therefore don't false-trigger a reboot.
+- **Never escalates on a network that was never up.** Nothing is restarted or rebooted until one of the targets has answered since boot, so a box on an air-gapped or LAN-only network whose gateway drops ping stays up. With no default route the watchdog restarts networking but never reboots.
 - **Reboot rate limit.** At most 3 reboots per hour, tracked across reboots in `/var/lib/forge-watchdog/reboot-history`. Beyond that the watchdog keeps restarting networking and logging loudly but stops rebooting — a sustained LAN failure (unplugged cable, dead router over a weekend, dead USB-Ethernet adapter) won't put the box into an indefinite reboot loop that just wears the SD card.
 
 Opt out with `--skip-host-watchdog` to `setup.sh` if a customer has their own host-resilience tooling. To install or reinstall by hand on an existing host:

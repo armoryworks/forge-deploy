@@ -59,6 +59,7 @@ jobs:
           ./tools/test-self-update.sh
           ./tools/test-script-modes.sh
           ./tools/test-setup-flags.sh
+          ./tools/test-network-watchdog.sh
 
       - name: First-install end-to-end (containerised)
         if: github.event_name == 'push'

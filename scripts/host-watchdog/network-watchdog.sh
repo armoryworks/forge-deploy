@@ -14,6 +14,10 @@
 #   - failure 2     : restart the active network manager
 #   - failure >= 4  : reboot the host
 #
+# Neither step runs until the network has answered at least once since boot,
+# so a box on a network that never reaches these targets is left alone. With
+# no default route, networking is still restarted but the host never reboots.
+#
 # Counter resets on the first successful check.
 #
 # Pinged targets:
@@ -31,6 +35,7 @@ set -uo pipefail   # NOT -e: we want every branch to run to completion.
 
 readonly LOG="/var/log/network-watchdog.log"
 readonly STATE_FILE="/run/network-watchdog.state"
+readonly HEALTHY_MARKER="/run/network-watchdog.seen-healthy"
 # Cross-reboot history of recent reboot timestamps (one epoch per line).
 # Lives in /var/lib (NOT /run) so it survives the reboots we record into it
 # — that's the whole point of the rate limit.
@@ -160,6 +165,7 @@ main() {
     if check_network; then
         # Healthy: clear counter and exit silently.
         echo 0 > "$STATE_FILE" 2>/dev/null || true
+        : > "$HEALTHY_MARKER" 2>/dev/null || true
         exit 0
     fi
 
@@ -174,12 +180,22 @@ main() {
 
     local gw
     gw=$(detect_gateway)
+
+    if [[ ! -e "$HEALTHY_MARKER" ]]; then
+        if (( fails == 1 )); then
+            log "Network check failed. gateway=${gw:-<none>}. It has not been reachable since boot, so the watchdog stays idle until it is."
+        fi
+        exit 0
+    fi
+
     log "Network check failed (failure #${fails}). gateway=${gw:-<none>}"
 
     if (( fails == RESTART_THRESHOLD )); then
         restart_networking || log "restart_networking returned non-zero"
     elif (( fails >= REBOOT_THRESHOLD )); then
-        if reboot_allowed; then
+        if [[ -z "$gw" ]]; then
+            log "No default route; not rebooting."
+        elif reboot_allowed; then
             log "Network unrecoverable after ${fails} consecutive failures — rebooting."
             do_reboot
         else
