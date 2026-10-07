@@ -32,6 +32,7 @@ case "$1" in
     exit 0 ;;
   compose)
     shift
+    echo "$*" >> "$F/compose_calls"
     [[ "$1" == "version" ]] && { [[ -f "$F/no_compose" ]] && exit 1; echo "v2.29.0"; exit 0; }
     # ... -f a -f b ps -q <svc>
     local_args=("$@")
@@ -526,6 +527,33 @@ if [[ -n "$CAUSE_AT" && -n "$ROLLBACK_AT" ]] && (( CAUSE_AT < ROLLBACK_AT )); th
   printf '  %s✓%s %s\n' "$C_G" "$C_0" "the cause comes before the rollback"; PASS=$((PASS+1))
 else
   printf '  %s✗%s %s\n' "$C_R" "$C_0" "the cause comes before the rollback"; FAIL=$((FAIL+1))
+fi
+
+scenario "A blue/green standby that never answers shows why before it is removed"
+picker_fixture
+mkdir -p "$SANDBOX/edge"
+printf 'server { location / { proxy_pass http://127.0.0.1:4200; } }\n' > "$SANDBOX/edge/forge-deploy-forge.conf"
+printf 'nginx: [emerg] cannot load certificate\nDB_PASSWORD=hunter2\n' > "$SANDBOX/fake/logs_forge-ui-b"
+OUT=$(HEALTHCHECK_TIMEOUT_SECS=2 FORGE_EDGE_CONF_DIR="$SANDBOX/edge" FORGE_EDGE_RELOAD_CMD=true run_cli "" 1.0.0-beta.25 --service ui)
+show "$OUT"
+check "takes the blue/green path"    "$OUT" "blue/green: forge-ui:4200 -> forge-ui-b:4201"
+check "prints the standby's log"     "$OUT" "cannot load certificate"
+check_not "redacts credentials"      "$OUT" "hunter2"
+check "says nothing changed"         "$OUT" "forge-ui is still serving and nothing changed"
+LOGS_AT=$(grep -n ' logs .*forge-ui-b$' "$SANDBOX/fake/compose_calls" | head -1 | cut -d: -f1)
+RM_AT=$(grep -n ' rm .*forge-ui-b$' "$SANDBOX/fake/compose_calls" | head -1 | cut -d: -f1)
+if [[ -n "$LOGS_AT" && -n "$RM_AT" ]] && (( LOGS_AT < RM_AT )); then
+  printf '  %s✓%s %s\n' "$C_G" "$C_0" "the log is read before the standby is removed"; PASS=$((PASS+1))
+else
+  printf '  %s✗%s %s (logs at %s, rm at %s)\n' "$C_R" "$C_0" "the log is read before the standby is removed" "${LOGS_AT:-none}" "${RM_AT:-none}"; FAIL=$((FAIL+1))
+fi
+check "the edge was not touched" "$(cat "$SANDBOX/edge/forge-deploy-forge.conf")" "127.0.0.1:4200;"
+CAUSE_AT=$(grep -n 'cannot load certificate' <<<"$OUT" | head -1 | cut -d: -f1)
+STOP_AT=$(grep -n 'Deploy stopped' <<<"$OUT" | head -1 | cut -d: -f1)
+if [[ -n "$CAUSE_AT" && -n "$STOP_AT" ]] && (( CAUSE_AT < STOP_AT )); then
+  printf '  %s✓%s %s\n' "$C_G" "$C_0" "the cause comes before the deploy is reported stopped"; PASS=$((PASS+1))
+else
+  printf '  %s✗%s %s\n' "$C_R" "$C_0" "the cause comes before the deploy is reported stopped"; FAIL=$((FAIL+1))
 fi
 
 scenario "--version and --status name the tooling in one line"
