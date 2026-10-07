@@ -965,10 +965,14 @@ cmd_support_bundle() {
   local stamp work name out_dir archive c
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
   name="forge-support-${stamp}"
-  out_dir="$PWD"
-  [[ -w "$out_dir" ]] || out_dir="${TMPDIR:-/tmp}"
+  out_dir="${HOME:-}"
+  if [[ -z "$out_dir" || ! -d "$out_dir" || ! -w "$out_dir" || "$out_dir" -ef "$REPO_ROOT" ]]; then
+    out_dir="${TMPDIR:-/tmp}"
+  fi
   archive="${out_dir}/${name}.tar.gz"
   work=$(mktemp -d)
+  SUPPORT_BUNDLE_WORK="$work"
+  trap 'rm -rf "$SUPPORT_BUNDLE_WORK"' EXIT
   mkdir -p "${work}/${name}"
   local dest="${work}/${name}"
   local strip_ansi=$'s/\x1b\\[[0-9;]*[A-Za-z]//g'
@@ -999,10 +1003,10 @@ cmd_support_bundle() {
   fi
 
   if ! ( umask 077 && tar -czf "$archive" -C "$work" "$name" ); then
-    rm -rf "$work"
     die "Could not write ${archive}"
   fi
   rm -rf "$work"
+  trap - EXIT
   ok "Support bundle written"
   printf '\n  %s\n\n' "$archive"
   printf '  Credential-shaped values are redacted, but it holds logs and this box'"'"'s\n'

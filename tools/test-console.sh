@@ -573,7 +573,7 @@ printf 'api started\nJwt__Key=supersecretvalue\n' > "$SANDBOX/fake/logs_forge-ap
 printf 'ui started\n' > "$SANDBOX/fake/logs_forge-ui"
 printf 'database system is ready\n' > "$SANDBOX/fake/logs_forge"
 mkdir -p "$SANDBOX/bundle"
-OUT=$(cd "$SANDBOX/bundle" && run_cli "" --support-bundle)
+OUT=$(HOME="$SANDBOX/bundle" run_cli "" --support-bundle)
 show "$OUT"
 ARCHIVE=$(grep -oE "$SANDBOX/bundle/forge-support-[0-9TZ]+\.tar\.gz" <<<"$OUT" | head -1)
 if [[ -n "$ARCHIVE" && -f "$ARCHIVE" ]]; then
@@ -592,6 +592,12 @@ else
   printf '  %s✗%s %s\n' "$C_R" "$C_0" "prints the path of an archive that exists"; FAIL=$((FAIL+1))
   printf '%s\n' "$OUT" | sed 's/^/        | /' | head -30
 fi
+check "nothing is written into the deploy tree" "$(find "$SANDBOX/tree" -name 'forge-support-*' | wc -l | tr -d ' ')" "0"
+check "the work directory is removed" "$(find "${TMPDIR:-/tmp}" -maxdepth 2 -name "$(basename "${ARCHIVE:-none}" .tar.gz)" 2>/dev/null | wc -l | tr -d ' ')" "0"
+mkdir -p "$SANDBOX/bundle-tree-home"
+OUT=$(HOME="$SANDBOX/tree" TMPDIR="$SANDBOX/bundle-tree-home" run_cli "" --support-bundle)
+check "a HOME that is the deploy tree falls back to TMPDIR" "$OUT" "$SANDBOX/bundle-tree-home/forge-support-"
+check "and still writes nothing into the tree" "$(find "$SANDBOX/tree" -name 'forge-support-*' | wc -l | tr -d ' ')" "0"
 
 scenario "--support-bundle follows the live blue/green UI"
 printf 'UI_LIVE_SERVICE=forge-ui-b\n' >> "$SANDBOX/tree/.env"
@@ -599,7 +605,7 @@ printf 'old ui retired\n' > "$SANDBOX/fake/logs_forge-ui"
 printf 'live ui serving\n' > "$SANDBOX/fake/logs_forge-ui-b"
 touch "$SANDBOX/fake/absent_forge-ui"
 mkdir -p "$SANDBOX/bundle-bg"
-OUT=$(cd "$SANDBOX/bundle-bg" && run_cli "" --support-bundle)
+OUT=$(HOME="$SANDBOX/bundle-bg" run_cli "" --support-bundle)
 show "$OUT"
 ARCHIVE=$(grep -oE "$SANDBOX/bundle-bg/forge-support-[0-9TZ]+\.tar\.gz" <<<"$OUT" | head -1)
 if [[ -n "$ARCHIVE" && -f "$ARCHIVE" ]]; then
@@ -611,7 +617,7 @@ else
 fi
 rm -f "$SANDBOX/fake/absent_forge-ui"
 mkdir -p "$SANDBOX/bundle-bg2"
-OUT=$(cd "$SANDBOX/bundle-bg2" && run_cli "" --support-bundle)
+OUT=$(HOME="$SANDBOX/bundle-bg2" run_cli "" --support-bundle)
 ARCHIVE=$(grep -oE "$SANDBOX/bundle-bg2/forge-support-[0-9TZ]+\.tar\.gz" <<<"$OUT" | head -1)
 if [[ -n "$ARCHIVE" && -f "$ARCHIVE" ]]; then
   UNPACK="$SANDBOX/bundle-bg2/unpacked"; mkdir -p "$UNPACK"; tar -xzf "$ARCHIVE" -C "$UNPACK"
