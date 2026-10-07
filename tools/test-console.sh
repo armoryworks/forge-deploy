@@ -36,6 +36,11 @@ case "$1" in
     # ... -f a -f b ps -q <svc>
     local_args=("$@")
     for ((i=0; i<${#local_args[@]}; i++)); do
+      if [[ "${local_args[$i]}" == "logs" ]]; then
+        svc="${local_args[-1]}"
+        [[ -f "$F/logs_${svc}" ]] && cat "$F/logs_${svc}"
+        exit 0
+      fi
       if [[ "${local_args[$i]}" == "ps" ]]; then
         svc="${local_args[-1]}"
         [[ -f "$F/no_container_${svc}" ]] && exit 0
@@ -106,6 +111,7 @@ case "$url" in
     [[ -f "$F/digests" ]] || exit 22
     [[ "$bearer" == 1 || -f "$F/no_token_endpoint" ]] || exit 22
     d=$(awk -v t="${url##*/manifests/}" '$1==t{print $2}' "$F/digests")
+    [[ "$want_code" == 1 ]] && { [[ -n "$d" ]] && printf 200 || printf 404; exit 0; }
     [[ -n "$d" ]] || exit 22
     printf 'HTTP/2 200\r\ndocker-content-digest: %s\r\n\r\n' "$d" ;;
   *) exit 22 ;;
@@ -485,6 +491,24 @@ OUT=$(run_cli "" --list)
 show "$OUT"
 check "pairs the newest release"   "$OUT" "1.0.0-beta.25  (main-aaaa111)"
 check_not "every hash resolved for paired releases" "$OUT" "1.0.0-beta.22  (build hash unresolved)"
+
+scenario "A failed health gate shows why before it rolls back"
+picker_fixture
+printf 'unhealthy\n' > "$SANDBOX/fake/health_forge-ui"
+printf 'nginx: [emerg] host not found in upstream "forge-api"\nDB_PASSWORD=hunter2\n' > "$SANDBOX/fake/logs_forge-ui"
+OUT=$(HEALTHCHECK_TIMEOUT_SECS=2 run_cli "" 1.0.0-beta.25 --service ui)
+show "$OUT"
+check "reports the failed gate"      "$OUT" "Service did not become healthy"
+check "prints the container log"     "$OUT" 'host not found in upstream "forge-api"'
+check_not "redacts credentials"      "$OUT" "hunter2"
+check "still rolls back"             "$OUT" "Rolling back to 1.0.0-beta.22"
+CAUSE_AT=$(grep -n 'host not found in upstream' <<<"$OUT" | head -1 | cut -d: -f1)
+ROLLBACK_AT=$(grep -n 'Rolling back to' <<<"$OUT" | head -1 | cut -d: -f1)
+if [[ -n "$CAUSE_AT" && -n "$ROLLBACK_AT" ]] && (( CAUSE_AT < ROLLBACK_AT )); then
+  printf '  %s✓%s %s\n' "$C_G" "$C_0" "the cause comes before the rollback"; PASS=$((PASS+1))
+else
+  printf '  %s✗%s %s\n' "$C_R" "$C_0" "the cause comes before the rollback"; FAIL=$((FAIL+1))
+fi
 
 reset_fake
 scenario "Starting over is offered, but never recommended"

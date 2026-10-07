@@ -1970,6 +1970,15 @@ diagnose_api() {
   return 1
 }
 
+# Why a service failed its health gate, printed while the failed container is
+# still there to ask: a known cause for the api, otherwise its recent log.
+explain_unhealthy() {
+  local svc_id="$1" compose_svc="$2"
+  [[ "$svc_id" == "api" ]] && diagnose_api && return 0
+  err "Last 50 lines of the ${compose_svc} log:"
+  compose logs --no-color --tail 50 "$compose_svc" 2>&1 | sanitize | sed 's/^/      /' >&2 || true
+}
+
 run_bootstrap() {
   local flags=() yn
   if [[ -t 0 ]]; then
@@ -3239,6 +3248,7 @@ deploy_ui_blue_green() {
   step "  Waiting for the standby UI on :${next_port} ($(health_timeout) s max)"
   if ! wait_http_ok "http://127.0.0.1:${next_port}/"; then
     err "Standby UI never answered — ${live} is still serving and nothing changed"
+    explain_unhealthy ui "$next"
     compose rm -sf "$next" >/dev/null 2>&1 || true
     env_set UI_IMAGE_TAG "$prior_tag"
     log_event ui "$prior_tag" "$target_tag" "bluegreen-standby-unhealthy"
@@ -3354,7 +3364,9 @@ deploy_service() {
     return 0
   fi
 
-  err "Service did not become healthy — rolling back to $prior_tag"
+  err "Service did not become healthy"
+  explain_unhealthy "$svc_id" "$compose_svc"
+  err "Rolling back to ${prior_tag:-<none>}"
   if [[ -n "$prior_tag" && "$prior_tag" != "$target_tag" ]]; then
     env_set "$envvar" "$prior_tag"
     compose up -d --force-recreate "$compose_svc" || true
