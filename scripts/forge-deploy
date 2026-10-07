@@ -475,6 +475,10 @@ declare -A _GHCR_TOKEN_CACHE
 # the token is requested with Basic auth so private packages resolve too.
 ghcr_token() {
   local repo="$1"
+  if [[ -n "${_GHCR_WORKER_TOKEN:-}" ]]; then
+    printf '%s' "$_GHCR_WORKER_TOKEN"
+    return 0
+  fi
   if [[ -n "${_GHCR_TOKEN_CACHE[$repo]:-}" ]]; then
     printf '%s' "${_GHCR_TOKEN_CACHE[$repo]}"
     return 0
@@ -610,10 +614,13 @@ ghcr_manifest_digest() {
 }
 
 # Tags on stdin -> "tag<TAB>digest" rows, resolved in parallel, in completion
-# order. The digest is empty when the registry returned none.
+# order. The digest is empty when the registry returned none. Bash cannot
+# export the token cache, so a warmed token is handed to the workers as a
+# scalar; without one, each worker fetches its own.
 tag_digest_rows() {
   local repo="$1"
-  export REGISTRY_HOST REGISTRY_OWNER REGISTRY_SCHEME REGISTRY_TIMEOUT STATE_DIR
+  local _GHCR_WORKER_TOKEN="${_GHCR_TOKEN_CACHE[$repo]:-}"
+  export REGISTRY_HOST REGISTRY_OWNER REGISTRY_SCHEME REGISTRY_TIMEOUT STATE_DIR _GHCR_WORKER_TOKEN
   export -f ghcr_manifest_digest ghcr_token ghcr_basic_creds registry_auth_args
   grep -v '^$' | xargs -r -P 8 -I{} bash -c 'printf "%s\t%s\n" "$1" "$(ghcr_manifest_digest "$0" "$1")"' "$repo" {} 2>/dev/null || true
 }
@@ -877,7 +884,7 @@ list_combined() {
 
   # Resolve digest → version for the shown versions, and the digest of every
   # build tag, in parallel. xargs -P keeps this responsive even with 100+
-  # build tags. Token is pre-warmed so the parallel workers reuse the cache.
+  # build tags. The token is fetched once here and handed to the workers.
   ghcr_token "$repo" >/dev/null 2>&1 || true
   printf '  %s(resolving build hashes…)%s\r' "${C_DIM}" "${C_RESET}" >&2
 

@@ -92,6 +92,7 @@ case "$url" in
     [[ -f "$F/npm_down" ]] && exit 22
     emit "$(printf '{"version":"%s"}' "$(cat "$F/npm_latest" 2>/dev/null || echo 0.1.6)")" 200 ;;
   *ghcr.io/token*)
+    echo token >> "$F/token_requests"
     [[ -f "$F/ghcr_down" ]] && exit 22
     # A plain registry:2 (demo and matrix boxes) serves no token endpoint.
     # Anonymous pull is expected there, so tags/list must still work.
@@ -487,6 +488,7 @@ check "says when no build matches"      "$OUT" "[4] 1.0.0-beta.9 (no matching bu
 check "keeps a release with no digest"  "$OUT" "[5] 1.0.0-beta.3"
 check_not "no bare question mark"       "$OUT" "(?)"
 check "quitting changes nothing"        "$OUT" "Stopped — no further changes."
+check "the workers share one token"    "requests=$(grep -c . "$SANDBOX/fake/token_requests");" "requests=2;"
 
 scenario "The --list view resolves build hashes too"
 picker_fixture
@@ -494,6 +496,7 @@ OUT=$(run_cli "" --list)
 show "$OUT"
 check "pairs the newest release"   "$OUT" "1.0.0-beta.25  (main-aaaa111)"
 check_not "every hash resolved for paired releases" "$OUT" "1.0.0-beta.22  (build hash unresolved)"
+check "the workers share one token per component" "requests=$(grep -c . "$SANDBOX/fake/token_requests");" "requests=4;"
 
 scenario "A failed health gate shows why before it rolls back"
 picker_fixture
