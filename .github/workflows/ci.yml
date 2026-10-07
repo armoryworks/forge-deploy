@@ -58,6 +58,7 @@ jobs:
           ./tools/test-install-discovery.sh
           ./tools/test-self-update.sh
           ./tools/test-script-modes.sh
+          ./tools/test-setup-flags.sh
 
       - name: First-install end-to-end (containerised)
         if: github.event_name == 'push'

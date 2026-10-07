@@ -75,6 +75,7 @@
 #                        the box if the network stays dead — recovers a
 #                        wedged Pi NIC without a physical button press.
 #                        Installed by default on Linux; no-op on macOS.
+#                        SKIP_HOST_WATCHDOG=1 in the environment does the same.
 #   --doctor             Run the network-exposure diagnostic (doctor.sh)
 #                        instead of setup: stack health, local TLS, host
 #                        firewall, public IP, NAT-hairpin detection, and an
@@ -112,6 +113,7 @@ DEPLOY_TARGET=""  # "" = prompt/saved, "local", "lan", "public"
 # Host network watchdog (Linux/systemd only — silently no-op on macOS).
 # Env override: SKIP_HOST_WATCHDOG=1 ./setup.sh
 SKIP_HOST_WATCHDOG=${SKIP_HOST_WATCHDOG:-false}
+[[ "${SKIP_HOST_WATCHDOG,,}" =~ ^(1|true|yes)$ ]] && SKIP_HOST_WATCHDOG=true || SKIP_HOST_WATCHDOG=false
 
 show_help() {
     sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
@@ -1719,7 +1721,7 @@ if $IS_LINUX && ! $SKIP_HOST_WATCHDOG; then
         warn "Fix: chmod +x $WATCHDOG_INSTALLER"
     fi
 elif $IS_LINUX && $SKIP_HOST_WATCHDOG; then
-    info "Skipping host network watchdog install (--skip-host-watchdog)"
+    info "Skipping host network watchdog install (--skip-host-watchdog / SKIP_HOST_WATCHDOG=1)"
 fi
 
 # ─────────────────────────────────────────────────────────────
