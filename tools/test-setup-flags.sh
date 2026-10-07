@@ -1,11 +1,5 @@
 #!/usr/bin/env bash
 # test-setup-flags.sh — setup.sh's opt-outs do what its help says.
-#
-# setup.sh cannot run here (it installs Docker services and systemd units), so
-# this lifts the exact lines that read SKIP_HOST_WATCHDOG and the line that
-# gates the watchdog install out of setup.sh and runs them on their own. If
-# those lines are reworded, the extraction finds nothing and the test fails
-# instead of passing against a copy.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

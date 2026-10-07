@@ -1,11 +1,5 @@
 #!/usr/bin/env bash
-# test-script-modes.sh — every script the deploy tree runs is committed
-# executable.
-#
-# setup.sh checks `-x` before running the host watchdog installer and skips it
-# with a warning when the bit is missing, so a mode lost in a commit turns into
-# a feature that silently never installs. The bit that matters is the one in
-# the git index: that is what a clone or a release tarball reproduces.
+# test-script-modes.sh — every script the deploy tree runs is committed executable.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
