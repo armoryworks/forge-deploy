@@ -7,11 +7,11 @@
 // before that module is ever loaded, which means this file must contain
 // nothing newer than dynamic import().
 var major = parseInt(process.versions.node.split('.')[0], 10);
-if (!(major >= 18)) {
+if (!(major >= 22)) {
   console.error(
-    'forge-deploy: Node.js 18 or newer is required (found v' + process.versions.node + ').\n' +
+    'forge-deploy: Node.js 22 or newer is required (found v' + process.versions.node + ').\n' +
     '  Install a current Node, then re-run:\n' +
-    '    Ubuntu/Debian: curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt install -y nodejs\n' +
+    '    Ubuntu/Debian: curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs\n' +
     '    Other systems: https://nodejs.org'
   );
   process.exit(1);
