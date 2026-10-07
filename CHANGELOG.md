@@ -2,6 +2,23 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [Unreleased]
+
+Fixes for what a design partner hit trying to upgrade.
+
+### Fixed
+
+- **The upgrade version picker listed no versions at all.** Every component printed `(no published versions found in GHCR)`. The 0.8.17 newest-first sort used `sort -t'\t'`, which GNU sort rejects as a multi-character separator, so the pipeline returned nothing. Underneath it, the parallel workers that pair a release with its build hash ran without the registry scheme, timeout or auth header, so every lookup failed and every release was dropped; fixing the sort alone would still have shown an empty list. Both are fixed, `--list` shares the corrected lookup, a release whose digest does not resolve is still listed, and a release without a paired build says `no matching build hash` instead of `(?)`. `tools/test-console.sh` now drives the real picker and `--list` against a registry that, like GHCR, refuses unauthenticated manifest requests.
+- **The host network watchdog was never installed.** `install-host-watchdog.sh`, `network-watchdog.sh`, `diagnose-api-health.sh` and `install-forge-panel.sh` were committed without the executable bit, and `setup.sh` skips a watchdog installer it cannot execute. They are executable now, and `tools/test-script-modes.sh` (run in CI) fails when any script `setup.sh` runs, or any shebang script under `scripts/`, loses the bit.
+- **A failed health gate rolled back without saying why.** The rollback recreated the old container and took the failed one's log with it. The cause is now printed first: a known `forge-api` failure in plain language, or else the last 50 lines of the service's log with credential-shaped values redacted.
+- **On TLS installs `/upgrade-status.json` returned the web app's HTML.** `forge-ui/nginx-ssl.conf` had no location for it. It now matches `nginx.conf`, and both set `log_not_found off`, so the normal 404 while no upgrade is running no longer lands in the log as an `[error]`.
+- **`npx @armoryworks/forge-deploy` accepted Node 18** although the package requires Node 22. The launcher now checks for 22 and its install hint points at `setup_22.x`.
+
+### Added
+
+- **`forge-deploy --support-bundle`** writes the `forge-api`, `forge-ui` and database logs, the deploy status, the recovery scan, the reachability doctor's output and the existing diagnostics into one `.tar.gz` and prints its path. Logs pass through the same redaction as filed issues, and the archive is readable only by its owner.
+- **`--version` and `--status` print `Deploy tooling: <package version> (tree <tag>)`**, so one line tells support which installer delivered the tree and which release the tree is.
+
 ## [0.8.17] - 2026-09-29
 
 ### Fixed
