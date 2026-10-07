@@ -529,6 +529,14 @@ else
   printf '  %s✗%s %s\n' "$C_R" "$C_0" "the cause comes before the rollback"; FAIL=$((FAIL+1))
 fi
 
+scenario "A failed health gate with nothing earlier to return to says so"
+picker_fixture
+printf 'unhealthy\n' > "$SANDBOX/fake/health_forge-ui"
+OUT=$(HEALTHCHECK_TIMEOUT_SECS=2 run_cli "" 1.0.0-beta.22 --service ui)
+show "$OUT"
+check_not "does not claim a rollback"  "$OUT" "Rolling back to"
+check "says there is nothing to roll back to" "$OUT" "No earlier version to roll back to; ui stays on 1.0.0-beta.22"
+
 scenario "A blue/green standby that never answers shows why before it is removed"
 picker_fixture
 mkdir -p "$SANDBOX/edge"

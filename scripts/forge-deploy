@@ -3441,10 +3441,12 @@ deploy_service() {
 
   err "Service did not become healthy"
   explain_unhealthy "$svc_id" "$compose_svc"
-  err "Rolling back to ${prior_tag:-<none>}"
   if [[ -n "$prior_tag" && "$prior_tag" != "$target_tag" ]]; then
+    err "Rolling back to ${prior_tag}"
     env_set "$envvar" "$prior_tag"
     compose up -d --force-recreate "$compose_svc" || true
+  else
+    err "No earlier version to roll back to; ${svc_id} stays on ${target_tag}"
   fi
   log_event "$svc_id" "$prior_tag" "$target_tag" "unhealthy-rolled-back"
   return 1
