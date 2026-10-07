@@ -52,6 +52,9 @@ case "$1" in
   images)
     [[ -f "$F/images" ]] && cat "$F/images"
     exit 0 ;;
+  logs)
+    [[ -f "$F/logs_${*: -1}" ]] && cat "$F/logs_${*: -1}"
+    exit 0 ;;
   ps)
     [[ -f "$F/running_images" ]] && cat "$F/running_images"
     exit 0 ;;
@@ -508,6 +511,43 @@ if [[ -n "$CAUSE_AT" && -n "$ROLLBACK_AT" ]] && (( CAUSE_AT < ROLLBACK_AT )); th
   printf '  %s✓%s %s\n' "$C_G" "$C_0" "the cause comes before the rollback"; PASS=$((PASS+1))
 else
   printf '  %s✗%s %s\n' "$C_R" "$C_0" "the cause comes before the rollback"; FAIL=$((FAIL+1))
+fi
+
+scenario "--version and --status name the tooling in one line"
+OUT=$(run_cli "" --version)
+check "names package and tree" "$OUT" "Deploy tooling: 0.1.6 (tree v"
+LINES=$(grep -c . <<<"$OUT")
+if [[ "$LINES" == 1 ]]; then
+  printf '  %s✓%s %s\n' "$C_G" "$C_0" "--version is a single line"; PASS=$((PASS+1))
+else
+  printf '  %s✗%s %s (%s lines)\n' "$C_R" "$C_0" "--version is a single line" "$LINES"; FAIL=$((FAIL+1))
+fi
+OUT=$(run_cli "" --status)
+check "--status carries the same line" "$OUT" "Deploy tooling: 0.1.6 (tree v"
+
+scenario "--support-bundle writes one archive and says where"
+printf 'api started\nJwt__Key=supersecretvalue\n' > "$SANDBOX/fake/logs_forge-api"
+printf 'ui started\n' > "$SANDBOX/fake/logs_forge-ui"
+printf 'database system is ready\n' > "$SANDBOX/fake/logs_forge"
+mkdir -p "$SANDBOX/bundle"
+OUT=$(cd "$SANDBOX/bundle" && run_cli "" --support-bundle)
+show "$OUT"
+ARCHIVE=$(grep -oE "$SANDBOX/bundle/forge-support-[0-9TZ]+\.tar\.gz" <<<"$OUT" | head -1)
+if [[ -n "$ARCHIVE" && -f "$ARCHIVE" ]]; then
+  printf '  %s✓%s %s\n' "$C_G" "$C_0" "prints the path of an archive that exists"; PASS=$((PASS+1))
+  LISTING=$(tar -tzf "$ARCHIVE")
+  for f in forge-api.log forge-ui.log forge-db.log doctor.txt version.txt status.txt; do
+    check "contains $f" "$LISTING" "/$f"
+  done
+  UNPACK="$SANDBOX/bundle/unpacked"; mkdir -p "$UNPACK"; tar -xzf "$ARCHIVE" -C "$UNPACK"
+  check "api log is in it"          "$(cat "$UNPACK"/*/forge-api.log)" "api started"
+  check "db log is in it"           "$(cat "$UNPACK"/*/forge-db.log)" "database system is ready"
+  check "doctor output is in it"    "$(cat "$UNPACK"/*/doctor.txt)" "checked reachability"
+  check "version line is in it"     "$(cat "$UNPACK"/*/version.txt)" "Deploy tooling:"
+  check_not "credentials redacted"  "$(cat "$UNPACK"/*/forge-api.log)" "supersecretvalue"
+else
+  printf '  %s✗%s %s\n' "$C_R" "$C_0" "prints the path of an archive that exists"; FAIL=$((FAIL+1))
+  printf '%s\n' "$OUT" | sed 's/^/        | /' | head -30
 fi
 
 reset_fake

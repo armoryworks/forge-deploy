@@ -196,6 +196,9 @@ USAGE:
                                       This is how a ui/api/db split migrates its schema — the
                                       api box skips the reconcile because the DB is elsewhere.
   forge-deploy --logs                 Tail the deploy history log
+  forge-deploy --support-bundle       Write app, UI and database logs plus doctor output
+                                      to one .tar.gz for support, and print its path
+  forge-deploy --version              Show the installer package and deploy tree versions
   forge-deploy --self-update          git pull forge-deploy + reinstall
   forge-deploy --self-update --keep-local     update, re-applying local edits on top
   forge-deploy --self-update --discard-local  update, throwing local edits away
@@ -919,6 +922,7 @@ list_combined() {
 
 cmd_status() {
   printf '\n%sDeploy status%s\n' "${C_BOLD}" "${C_RESET}"
+  tooling_version_line
   printf '%sthis box: %s%s\n\n' "${C_DIM}" "$(box_scope_label)" "${C_RESET}"
   local svc_id
   for svc_id in $(box_service_ids); do
@@ -948,6 +952,52 @@ cmd_status() {
     printf '  deployedAt: %s\n' "${deployedAt:-<none>}"
     printf '  container:  %s\n\n' "$health_status"
   done
+}
+
+# Everything support needs from this box in one archive: the app, UI and
+# database logs, both doctors' findings and the deploy status. Read-only, and
+# deliberately free of preflight: a broken box is when this gets run.
+cmd_support_bundle() {
+  local stamp work name out_dir archive c
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  name="forge-support-${stamp}"
+  out_dir="$PWD"
+  [[ -w "$out_dir" ]] || out_dir="${TMPDIR:-/tmp}"
+  archive="${out_dir}/${name}.tar.gz"
+  work=$(mktemp -d)
+  mkdir -p "${work}/${name}"
+  local dest="${work}/${name}"
+  local strip_ansi=$'s/\x1b\\[[0-9;]*[A-Za-z]//g'
+
+  step "Collecting a support bundle"
+  tooling_version_line > "${dest}/version.txt"
+  for c in forge-api forge-ui forge; do
+    local file="$c"
+    [[ "$c" == "forge" ]] && file="forge-db"
+    docker logs --timestamps --tail 2000 "$c" 2>&1 | sanitize > "${dest}/${file}.log" || true
+  done
+  ok "Container logs (forge-api, forge-ui, forge-db)"
+  ( cmd_status ) 2>&1 | sed -E "$strip_ansi" > "${dest}/status.txt" || true
+  ( bootstrap_scan ) 2>&1 | sed -E "$strip_ansi" > "${dest}/recovery-scan.txt" || true
+  collect_diagnostics > "${dest}/diagnostics.md" || true
+  ok "Deploy status and recovery scan"
+  if [[ -f "${REPO_ROOT}/doctor.sh" ]]; then
+    step "Running the reachability doctor (read-only, can take a minute)"
+    ( cd "$REPO_ROOT" && FORGE_DEPLOY_CALLER=1 bash ./doctor.sh ) 2>&1 | sed -E "$strip_ansi" > "${dest}/doctor.txt" || true
+    ok "Doctor output"
+  else
+    printf 'doctor.sh is missing from %s\n' "$REPO_ROOT" > "${dest}/doctor.txt"
+  fi
+
+  if ! ( umask 077 && tar -czf "$archive" -C "$work" "$name" ); then
+    rm -rf "$work"
+    die "Could not write ${archive}"
+  fi
+  rm -rf "$work"
+  ok "Support bundle written"
+  printf '\n  %s\n\n' "$archive"
+  printf '  Credential-shaped values are redacted, but it holds logs and this box'"'"'s\n'
+  printf '  network details. Look through it before you send it.\n'
 }
 
 cmd_logs() {
@@ -2429,6 +2479,22 @@ console_installed_tooling() {
   fi
 }
 
+# One line naming the npm package that delivered this tree and the tree's own
+# release tag, plus this CLI's version when it is not the one the tree carries.
+tooling_version_line() {
+  local pkg tree cli_note=""
+  pkg=$(console_installed_tooling 2>/dev/null || true)
+  if [[ -e "${REPO_ROOT}/.git" ]] && command -v git >/dev/null 2>&1; then
+    tree=$(git -C "$REPO_ROOT" describe --tags 2>/dev/null || true)
+  fi
+  if [[ -z "${tree:-}" && -r "${REPO_ROOT}/scripts/forge-deploy" ]]; then
+    tree=$(sed -n 's/^readonly FORGE_DEPLOY_VERSION="\(.*\)"$/v\1/p' "${REPO_ROOT}/scripts/forge-deploy" 2>/dev/null | head -1)
+  fi
+  tree="${tree:-v${FORGE_DEPLOY_VERSION}}"
+  [[ "$tree" == "v${FORGE_DEPLOY_VERSION}"* ]] || cli_note=", this CLI v${FORGE_DEPLOY_VERSION}"
+  printf 'Deploy tooling: %s (tree %s%s)\n' "${pkg:-unknown}" "$tree" "$cli_note"
+}
+
 console_latest_tooling() {
   command -v curl >/dev/null 2>&1 || return 0
   curl -fsSL --max-time 8 \
@@ -3902,7 +3968,8 @@ main() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --help|-h)         usage; exit 0 ;;
-      --version|-V)      printf 'forge-deploy %s\n' "$FORGE_DEPLOY_VERSION"; exit 0 ;;
+      --version|-V)      tooling_version_line; exit 0 ;;
+      --support-bundle)  mode="support-bundle"; shift ;;
       --list)            mode="list"; shift ;;
       --releases)        list_mode="releases"; shift ;;
       --builds)          list_mode="builds"; shift ;;
@@ -3981,6 +4048,9 @@ main() {
       ;;
     logs)
       cmd_logs
+      ;;
+    support-bundle)
+      cmd_support_bundle
       ;;
     components)
       cmd_components "$components_val"
