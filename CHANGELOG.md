@@ -2,7 +2,7 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
-## [Unreleased]
+## [0.8.18] - 2026-10-09
 
 Fixes for what a design partner hit trying to upgrade.
 
