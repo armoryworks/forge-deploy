@@ -110,6 +110,53 @@ check "saved first"          "$OUT" "Saved a copy first"
 check_not "edit is gone"     "$(cat "$SANDBOX/install/docker-compose.yml")" "junk"
 check "a copy remains"       "$(ls "$SANDBOX/install/.local-changes" | wc -l)" "1"
 
+upstream_tag() {
+  git_q -C "$SANDBOX/upstream" tag "$1"
+  git_q -C "$SANDBOX/upstream" push -q origin "$1"
+}
+
+pin_install() {
+  git -C "$SANDBOX/install" fetch -q --tags origin
+  git -C "$SANDBOX/install" checkout -q "$1"
+}
+
+scenario "A tag-pinned install moves to the newest release tag"
+build_install
+upstream_tag v0.8.9
+pin_install v0.8.9
+upstream_commit setup.sh "placeholder-v0.8.10"
+upstream_tag v0.8.10
+upstream_commit setup.sh "unreleased"
+OUT=$(run_update)
+check "names the move"       "$OUT" "Moved to release v0.8.10 (was v0.8.9)"
+check "release landed"       "$(cat "$SANDBOX/install/setup.sh")" "placeholder-v0.8.10"
+check "still pinned to tag"  "$(git -C "$SANDBOX/install" describe --tags --exact-match HEAD)" "v0.8.10"
+check_not "no branch error"  "$OUT" "not currently on a branch"
+
+scenario "A tag-pinned install already on the newest tag stays put"
+OUT=$(run_update)
+check "says it is current"   "$OUT" "Already at the newest release, v0.8.10"
+check "unchanged"            "$(cat "$SANDBOX/install/setup.sh")" "placeholder-v0.8.10"
+
+scenario "A prerelease tag never outranks its release"
+upstream_commit setup.sh "rc"
+upstream_tag v0.8.11-rc.1
+upstream_commit setup.sh "placeholder-v0.8.11"
+upstream_tag v0.8.11
+OUT=$(run_update)
+check "picks the release"    "$OUT" "Moved to release v0.8.11 (was v0.8.10)"
+
+scenario "--keep-local works on a tag-pinned install"
+printf 'image: pgvector/pgvector:pg17
+mine: pinned
+' > "$SANDBOX/install/docker-compose.yml"
+upstream_commit setup.sh "placeholder-v0.8.12"
+upstream_tag v0.8.12
+OUT=$(run_update --keep-local)
+check "re-applied"           "$OUT" "re-applied on top"
+check "edit survived"        "$(cat "$SANDBOX/install/docker-compose.yml")" "pinned"
+check "release landed"       "$(cat "$SANDBOX/install/setup.sh")" "placeholder-v0.8.12"
+
 printf '\n──────────────────────────────\n'
 printf '  %s%d passed%s   %s%d failed%s\n\n' "$C_G" "$PASS" "$C_0" \
   "$( ((FAIL)) && printf '%s' "$C_R" || printf '%s' "$C_G")" "$FAIL" "$C_0"

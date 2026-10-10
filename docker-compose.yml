@@ -169,8 +169,6 @@ services:
       - Mobile__CertSha256=${MOBILE_CERT_SHA256:-}
       - Mobile__MinAppVersion=${MOBILE_MIN_APP_VERSION:-1.0.0}
       - Mobile__CrashReportingDsn=${MOBILE_CRASH_DSN:-}
-      - APP_VERSION=${APP_VERSION:-dev}
-      - GIT_COMMIT=${GIT_COMMIT:-}
       # Self-service upgrade: where forge-agent listens, and the shared secret.
       # Both empty by default — the admin Updates screen then reports that no
       # agent is installed and points at the command line, which is the correct

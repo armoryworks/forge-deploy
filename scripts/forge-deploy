@@ -2931,6 +2931,24 @@ report_local_edits() {
   printf '\n  This is usually a fix someone applied by hand. Look before you lose it.\n'
 }
 
+update_tree() {
+  if git -C "$REPO_ROOT" symbolic-ref -q HEAD >/dev/null; then
+    git -C "$REPO_ROOT" pull --ff-only
+    return
+  fi
+  git -C "$REPO_ROOT" fetch --quiet --tags --force origin || return 1
+  local target current
+  target=$(git -C "$REPO_ROOT" -c versionsort.suffix=- tag -l 'v[0-9]*' --sort=-v:refname | head -n1)
+  [[ -n "$target" ]] || { err "No release tags found on origin."; return 1; }
+  current=$(git -C "$REPO_ROOT" describe --tags --exact-match HEAD 2>/dev/null || true)
+  if [[ "$current" == "$target" ]]; then
+    ok "Already at the newest release, $target"
+    return 0
+  fi
+  git -C "$REPO_ROOT" checkout --quiet "$target" || return 1
+  ok "Moved to release $target${current:+ (was $current)}"
+}
+
 cmd_self_update() {
   step "Self-update: $REPO_ROOT"
   tree_is_git_checkout || die "Not a git checkout: $REPO_ROOT"
@@ -2944,7 +2962,7 @@ cmd_self_update() {
         if ! git -C "$REPO_ROOT" stash push --quiet --message "forge-deploy self-update" -- 2>/dev/null; then
           die "Could not set the local edits aside — nothing was changed."
         fi
-        if ! git -C "$REPO_ROOT" pull --ff-only; then
+        if ! update_tree; then
           git -C "$REPO_ROOT" stash pop --quiet 2>/dev/null || true
           die "Update failed — your edits have been put back."
         fi
@@ -2963,7 +2981,7 @@ cmd_self_update() {
         report_local_edits
         saved=$(save_local_edits) && ok "Saved a copy first: $saved"
         git -C "$REPO_ROOT" checkout -- . 2>/dev/null || true
-        git -C "$REPO_ROOT" pull --ff-only || die "Update failed."
+        update_tree || die "Update failed."
         ok "Updated. The discarded edits are still in $saved if you need them."
         ;;
       *)
@@ -2979,8 +2997,8 @@ cmd_self_update() {
         ;;
     esac
   else
-    git -C "$REPO_ROOT" pull --ff-only
-    ok "Pulled latest"
+    update_tree || die "Update failed."
+    git -C "$REPO_ROOT" symbolic-ref -q HEAD >/dev/null && ok "Pulled latest"
   fi
   if [[ -x "${REPO_ROOT}/scripts/install-forge-deploy.sh" ]]; then
     "${REPO_ROOT}/scripts/install-forge-deploy.sh"
