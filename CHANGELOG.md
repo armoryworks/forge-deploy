@@ -2,6 +2,13 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.19] - 2026-10-09
+
+### Fixed
+
+- **`forge-deploy --self-update` always failed on an npm-installed tree.** The installer pins the tree to a release tag, which leaves git on a detached HEAD, and self-update ran `git pull`, which refuses to run there. A tag-pinned tree now fetches tags and moves to the newest release (a release outranks its own prereleases); a tree on a branch still pulls as before. `--keep-local` and `--discard-local` work the same way on both. Because self-update re-runs `install-forge-deploy.sh`, this also replaces an old frozen copy of the CLI at `/usr/local/bin/forge-deploy` with the wrapper that runs the tree's own CLI.
+- **`/api/v1/version` reported `dev` on every install.** The compose file set `APP_VERSION=${APP_VERSION:-dev}` on `forge-api`, overriding the version the release image carries (from forge-api 1.0.0-beta.28). The two lines are gone from `docker-compose.yml` and `.env.example`; an `APP_VERSION` left in an existing `.env` is now ignored.
+
 ## [0.8.18] - 2026-10-09
 
 Fixes for what a design partner hit trying to upgrade.
