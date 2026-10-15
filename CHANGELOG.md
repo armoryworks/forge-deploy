@@ -2,6 +2,12 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [Unreleased]
+
+### Changed
+
+- **The public test-bed and demo SPAs are opt-in.** A box deploys `test` / `demo` only when its `COMPOSE_PROFILES` lists them, which `forge-deploy --setup` now asks about (or takes as `--with test,demo`). Before, a single-box setup wrote all four components into `FORGE_DEPLOY_SERVICES`, so every upgrade on a customer box stopped at "Tag not found in GHCR: armoryworks/forge-test:<version>" after the API and UI had already moved — forge-test is not published per Forge release. An unset `FORGE_DEPLOY_SERVICES` now means api + ui; an existing box that lists `test` or `demo` without the profile just stops deploying them, since compose was never starting them anyway.
+
 ## [0.8.19] - 2026-10-09
 
 ### Fixed
