@@ -2,7 +2,7 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
-## [Unreleased]
+## [0.8.20] - 2026-10-15
 
 ### Changed
 
@@ -330,7 +330,7 @@ The `v0.8.0` tag was cut one commit before the jq/curl guard listed under 0.8.0 
 
 - **Node version gate before the implementation loads** (`bin/forge-deploy.mjs` is now a shim over `bin/install.mjs`). `fetch` and `Readable.fromWeb` fail on Node < 18 as a bare `ReferenceError` naming neither Node nor the version; `engines` only makes npm warn. The shim contains nothing newer than dynamic `import()`, checks the major version, and prints install instructions.
 
-## [Unreleased]
+## [0.8.20] - 2026-10-15
 
 ### Fixed
 
