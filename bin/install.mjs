@@ -52,7 +52,7 @@ const PKG_VERSION = JSON.parse(
   readFileSync(join(dirname(dirname(fileURLToPath(import.meta.url))), 'package.json'), 'utf8'),
 ).version;
 
-const DEFAULT_TREE_TAG = 'v0.8.20';
+const DEFAULT_TREE_TAG = 'v0.8.21';
 
 // Accept `v0.7.0`, `tags/v0.7.0`, or `heads/main` (development) alike.
 const rawRef = (process.env.FORGE_DEPLOY_REF ?? DEFAULT_TREE_TAG).replace(/^refs\//, '');
@@ -70,7 +70,7 @@ let upgradeTag = null;
 let dirArg;
 if (subcommand) {
   for (const p of positionals.slice(1)) {
-    if (subcommand === 'upgrade' && TAG_RE.test(p)) upgradeTag = p;
+    if (subcommand === 'upgrade' && TAG_RE.test(p)) upgradeTag = p.replace(/^v/, '');
     else dirArg = p;
   }
 } else {

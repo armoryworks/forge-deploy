@@ -22,7 +22,7 @@ set -euo pipefail
 # Constants
 # ─────────────────────────────────────────────────────────────
 
-readonly FORGE_DEPLOY_VERSION="0.8.20"
+readonly FORGE_DEPLOY_VERSION="0.8.21"
 # The copy installed at /usr/local/bin has no tree around it, so the default
 # stays /opt/forge-deploy. A copy still sitting in <tree>/scripts belongs to
 # that tree — resolving to it is what lets an install live anywhere else.
@@ -507,6 +507,9 @@ validate_tag() {
   local tag="$1"
   if [[ "$tag" == "latest" ]]; then
     die "Refusing to deploy 'latest' — pass a main-<sha> or <X.Y.Z> tag (try: forge-deploy --list)"
+  fi
+  if [[ "$tag" =~ ^v[0-9] && "${tag#v}" =~ $TAG_RE_SEMVER ]]; then
+    die "Invalid tag format: '$tag' — image tags have no leading 'v'; use '${tag#v}'"
   fi
   if [[ ! "$tag" =~ $TAG_RE_SHA ]] && [[ ! "$tag" =~ $TAG_RE_SEMVER ]]; then
     die "Invalid tag format: '$tag' (expected main-<7-hex> or X.Y.Z)"

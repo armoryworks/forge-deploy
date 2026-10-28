@@ -2,6 +2,12 @@
 
 All notable changes to forge-deploy and its packaged images. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions track the deploy stack as a whole, not the individual app image tags.
 
+## [0.8.21] - 2026-10-28
+
+### Fixed
+
+- **`npx @armoryworks/forge-deploy upgrade v1.0.0-beta.NN` works.** The installer accepted a `v`-prefixed release tag and passed it through verbatim, and the deploy CLI then refused it as an invalid tag after the tree had already been refreshed. The installer now drops the leading `v`; run directly, `forge-deploy v1.2.3` names the tag to use instead.
+
 ## [0.8.20] - 2026-10-15
 
 ### Changed
